@@ -13,7 +13,7 @@ logging.basicConfig(
     level=logging.DEBUG
 )
 
-root = '../'
+root = './'
 file_name = 'data/raw/20191017_130713/20191017_130713'
 mov_ext = '.mat'
 gt_ext = '.mat'
