@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from caiman.source_extraction import cnmf
 
-from CNMF.CNMF import MiniscopeOnACID
+from calcium_imaging.CNMF import MiniscopeOnACID
 
 logging.basicConfig(
     format="%(relativeCreated)12d [%(filename)s:%(funcName)10s():%(lineno)s] [%(process)d] %(message)s",
