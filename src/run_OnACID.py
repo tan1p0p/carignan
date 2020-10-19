@@ -1,8 +1,12 @@
+import logging
 import os
 import sys
+
 import numpy as np
 import matplotlib.pyplot as plt
-import logging
+from caiman.source_extraction import cnmf
+
+from CNMF.CNMF import MiniscopeOnACID
 
 logging.basicConfig(
     format="%(relativeCreated)12d [%(filename)s:%(funcName)10s():%(lineno)s] [%(process)d] %(message)s",
@@ -15,13 +19,6 @@ mov_ext = '.mat'
 gt_ext = '.mat'
 mov_key = 'video'
 sys.path.append(root)
-
-from src.data_handling import ready_mov_file, load_params
-
-# out_paths = [ready_mov_file(root + file_name + mov_ext, mov_key, end_frame=200)[0]]
-# for i in range(300):
-#     out_path, dims = ready_mov_file(root + file_name + mov_ext, mov_key, first_frame=200+i, end_frame=200+i+1)
-#     out_paths.append(out_path)
 
 stride = 8                                      # overlap between patches (used only during initialization)
 ssub = 2                                        # spatial downsampling factor (during initialization)
@@ -87,15 +84,10 @@ params_dict = {
     # 'simultaneously': True
 }
 
-from caiman.source_extraction import cnmf
-from OnACID.real_time_cnmf import MiniscopeOnACID
-
 opts = cnmf.params.CNMFParams(params_dict=params_dict)
 cnm = MiniscopeOnACID(params=opts)
-# cnm = cnmf.online_cnmf.OnACID(params=opts)
 cnm.fit_from_scope(
     os.path.join(root, 'data/out/sample/sample'),
-    # input_avi_path=os.path.join(root, 'data/interim/20191017_130713/20191017_130713.avi')
     input_avi_path=os.path.join(root, 'data/raw/LIS68HC/1msCam1HC.avi'),
     seed_file=os.path.join(root, 'data/interim/LIS68HC/seed.mat'),
 )

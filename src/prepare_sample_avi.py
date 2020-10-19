@@ -91,14 +91,12 @@ def load_params(path):
 
 
 if __name__ == "__main__":
-    out_path, dims = ready_mov_file('/Users/hassaku/Documents/research/online-calcium-imaging/data/raw/20191017_130713/20191017_130713.mat', 'video', 100)
-    estimates = load_annotation_file('data/raw/20191017_130713/20191017_130713.mat', 100, dims)
-    print(estimates)
+    root = './'
+    file_name = 'data/raw/20191017_130713/20191017_130713'
+    mov_ext = '.mat'
+    mov_key = 'video'
 
-    out_path, dims = ready_mov_file('data/raw/DM95/DM95.h5', 'Object', 100)
-    estimates = load_annotation_file('data/raw/DM95/DM95.mat', 100, dims)
-    print(estimates)
-
-    out_path, dims = ready_mov_file('data/raw/DM298/DM298_first10000.h5', 'mov', 100)
-    estimates = load_annotation_file('data/raw/DM298/DM298.mat', 100, dims)
-    print(estimates)
+    out_paths = [ready_mov_file(root + file_name + mov_ext, mov_key, end_frame=200)[0]]
+    for i in range(300):
+        out_path, dims = ready_mov_file(root + file_name + mov_ext, mov_key, first_frame=200+i, end_frame=200+i+1)
+        out_paths.append(out_path)
