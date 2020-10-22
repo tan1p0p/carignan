@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import time
 
 import cv2
@@ -12,6 +13,7 @@ from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initializ
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
         super().__init__(params=params, estimates=estimates, path=path, dview=dview)
+        self.time_frame = 0
 
     def initialize_online(self, model_LN=None, fls=None, init_batch=None, Y=None):
         if fls == None:
@@ -401,6 +403,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             frame, _ = show_next_frame('initialize', win_params, mode='initialize', text_color=(0, 0, 255), avi_out=avi_out)
             init_Y[i] = frame.copy()
             cv2.waitKey(1)
+        self.time_frame += init_batch
 
         with h5py.File(out_file_name + '.mat', 'a') as f:
             f['initialize_last_frame_t'] = time.time()
@@ -409,7 +412,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         Y_init = caiman.base.movies.movie(init_Y.astype(np.float32))
         self.initialize_online(model_LN=model_LN, Y=Y_init)
 
-        t = init_batch
         logging.info('now running CNMF-E')
         prepare_window(win_params, mode='analyze')
         t_online = []
@@ -489,34 +491,34 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             prev_time = time.time()
 
             try:
-                set_plot(t)
-                if t % 100 == 0:
-                    self.set_results(1, t)
+                set_plot(self.time_frame)
+                if self.time_frame % 100 == 0:
+                    self.set_results(1, self.time_frame)
                     self.estimates.noisyC = np.hstack(
                         (self.estimates.noisyC, np.zeros((self.estimates.noisyC.shape[0], 100))))
                     self.estimates.C_on = np.hstack(
                         (self.estimates.C_on, np.zeros((self.estimates.C_on.shape[0], 100))))
-                elif t % 100 == 10:
+                elif self.time_frame % 100 == 10:
                     if self.params.get('online', 'ds_factor') > 1:
                         neuron_num = self.estimates.A.shape[-1]
                         A = np.hstack([cv2.resize(self.estimates.A[:, i].reshape(self.estimates.dims, order='F').toarray(),
                                                 frame.shape[::-1]).reshape(-1, order='F')[:,None] for i in range(neuron_num)])
-                elif t % 100 == 20:
+                elif self.time_frame % 100 == 20:
                     with h5py.File(out_file_name + '.mat', 'a') as f:
                         f['A'].resize(A.shape)
                         f['A'][()] = A
-                elif t % 100 == 30:
+                elif self.time_frame % 100 == 30:
                     with h5py.File(out_file_name + '.mat', 'a') as f:
                         f['C'].resize(self.estimates.C.shape)
                         f['C'][()] = self.estimates.C
-                elif t % 100 == 40:
+                elif self.time_frame % 100 == 40:
                     with h5py.File(out_file_name + '.mat', 'a') as f:
                         f['S'].resize(self.estimates.S.shape)
                         f['S'][()] = self.estimates.S
 
                 frame, _ = show_next_frame(f'FPS: {fps:.4f}', win_params, mode='analyze', text_color=(0, 0, 255), avi_out=avi_out)
-                t_online.append(self.fit_next_from_raw(frame, t, model_LN=model_LN))
-                t += 1
+                t_online.append(self.fit_next_from_raw(frame, self.time_frame, model_LN=model_LN))
+                self.time_frame += 1
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
             except:
