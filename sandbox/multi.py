@@ -28,6 +28,6 @@ def server(ip, port, array):
 if __name__ == '__main__':
     array = Array('i', 15)
     server = Process(target=server, args=('127.0.0.1', 50007, array))
-    caiman = Process(target=caiman, args=(array))
+    caiman = Process(target=caiman, args=(array,))
     server.start()
     caiman.start()
