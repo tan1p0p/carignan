@@ -585,6 +585,3 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             self.estimates.bl = [0] * self.estimates.C.shape[0]
             self.estimates.S = np.zeros_like(self.estimates.C)
-
-if __name__ == "__main__":
-    pass
