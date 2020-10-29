@@ -10,11 +10,6 @@ from utils.utils import show_logs
 root = './'
 
 def prepare_onacid():
-    file_name = 'data/raw/20191017_130713/20191017_130713'
-    mov_ext = '.mat'
-    gt_ext = '.mat'
-    mov_key = 'video'
-
     stride = 8                                      # overlap between patches (used only during initialization)
     ssub = 2                                        # spatial downsampling factor (during initialization)
     ds_factor = 1 * ssub                            # spatial downsampling factor (during online processing)
@@ -49,7 +44,7 @@ def prepare_onacid():
         'normalize_init': False,
         'update_freq': 200,
         'expected_comps': 500,                       # maximum number of expected components used for memory pre-allocation (exaggerate here)
-        'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data       
+        'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
         'min_num_trial': 5,                          # number of candidate components per frame
         'use_corr_img': True,                        # flag for using the corr*pnr image when searching for new neurons (otherwise residual)
@@ -94,6 +89,7 @@ def run_onacid_from_scope(cnm):
     out_dir = os.path.join(root, f'data/out/{now}/')
     os.makedirs(out_dir)
     cnm.fit_from_scope(
+        input_camera_id=0,
         out_file_name=out_dir + 'out',
     )
 
