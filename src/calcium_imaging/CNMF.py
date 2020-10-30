@@ -9,6 +9,10 @@ import numpy as np
 import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
+from scipy.sparse import csc_matrix, spdiags
+from past.utils import old_div
+from sklearn.decomposition import NMF
+from sklearn.preprocessing import normalize
 
 def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
                              gHalf=(5, 5), sniper_mode=True, rval_thr=0.85,
@@ -140,6 +144,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
         super().__init__(params=params, estimates=estimates, path=path, dview=dview)
         self.time_frame = 0
+        self.seed_file = None
 
     def __init_window_status(self, frame_shape, max_bright):
         self.window_name = 'microscope CNMF-E'
@@ -324,18 +329,10 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.estimates.bl = [0] * self.estimates.C.shape[0]
             self.estimates.S = np.zeros_like(self.estimates.C)
 
-    def initialize_online(self, model_LN=None, fls=None, init_batch=None, Y=None):
-        if fls == None:
-            fls = self.params.get('data', 'fnames')
+    def initialize_online(self, model_LN, Y):
+        _, original_d1, original_d2 = Y.shape
         opts = self.params.get_group('online')
-        if init_batch == None:
-            init_batch = opts['init_batch']
-        if type(Y) != caiman.base.movies.movie:
-            mode = 'from_file'
-            Y = caiman.load(fls[0], subindices=slice(0, init_batch,
-                        None), var_name_hdf5=self.params.get('data', 'var_name_hdf5')).astype(np.float32)
-        else:
-            mode = 'from_scope'
+        init_batch = opts['init_batch']
         if model_LN is not None:
             Y = Y - caiman.movie(np.squeeze(model_LN.predict(np.expand_dims(Y, -1))))
             Y = np.maximum(Y, 0)
@@ -362,21 +359,18 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                     self.estimates.shifts.append([tuple(sh) for i in range(n_p)])
             else:
                 self.estimates.shifts.extend(mc[1])                
-        img_min = Y.min()
+        self.img_min = Y.min()
         self.current_frame_cor = Y[-1]
 
         if self.params.get('online', 'normalize'):
-            Y -= img_min
+            Y -= self.img_min
         img_norm = np.std(Y, axis=0)
         img_norm += np.median(img_norm)  # normalize data to equalize the FOV
         logging.info('Frame size:' + str(img_norm.shape))
         if self.params.get('online', 'normalize'):
             Y = Y/img_norm[None, :, :]
-        if opts['show_movie']:
-            self.bnd_Y = np.percentile(Y,(0.001,100-0.001))
         total_frame, d1, d2 = Y.shape
         Yr = Y.to_2D().T        # convert data into 2D array
-        self.img_min = img_min
         self.img_norm = img_norm
         if self.params.get('online', 'init_method') == 'bare':
             logging.info('Using bare init')
@@ -434,21 +428,30 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         elif self.params.get('online', 'init_method') == 'seeded':
             init = self.params.get_group('init').copy()
             is1p = (init['method_init'] == 'corr_pnr' and init['ring_size_factor'] is not None)
-            tmp = seeded_initialization(
-                Y.transpose(1, 2, 0), self.estimates.A, gnb=self.params.get('init', 'nb'), k=self.params.get('init', 'K'),
+
+            if self.seed_file is None:
+                raise ValueError('Please input analyzed mat file path as seed_file.')
+            with h5py.File(self.seed_file, 'r') as f:
+                ds_factor = self.params.get('online', 'ds_factor')
+                Ain = f['A'][()].reshape((original_d1, original_d2, -1), order='F')
+                Ain = cv2.resize(Ain, (d2, d1))
+                Ain = Ain.reshape((-1, Ain.shape[-1]), order='F')
+                Ain_norm = (Ain - Ain.min(0)[None, :]) / (Ain.max(0) - Ain.min(0))
+                A_seed = Ain_norm > 0.5
+
+            tmp = online_cnmf.seeded_initialization(
+                Y.transpose(1, 2, 0), A_seed, k=self.params.get('init', 'K'),
                 gSig=self.params.get('init', 'gSig'), return_object=False)
             self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f, self.estimates.YrA = tmp
+
             if is1p:
                 ssub_B = self.params.get('init', 'ssub_B') * self.params.get('init', 'ssub')
                 ring_size_factor = self.params.get('init', 'ring_size_factor')
                 gSiz = 2 * np.array(self.params.get('init', 'gSiz')) // 2 + 1
-                W, b0 = compute_W(
+                W, b0 = initialization.compute_W(
                     Y.transpose(1, 2, 0).reshape((-1, total_frame), order='F'),
-                    tmp[0], tmp[2], (d1, d2), ring_size_factor * gSiz[0], ssub=ssub_B)
+                    self.estimates.A, self.estimates.C, (d1, d2), ring_size_factor * gSiz[0], ssub=ssub_B)
                 self.estimates.W, self.estimates.b0 = W, b0
-            # <class 'scipy.sparse.csr.csr_matrix'> (1410, 1410) <class 'numpy.ndarray'> (22560,)
-            # <class 'scipy.sparse.csr.csr_matrix'> (1410, 1410) <class 'numpy.ndarray'> (90240,)
-            # print(type(self.estimates.W), self.estimates.W.shape, type(self.estimates.b0), self.estimates.b0.shape)
             self.estimates.S = np.zeros_like(self.estimates.C)
             nr = self.estimates.C.shape[0]
             self.estimates.g = np.array([-np.poly([0.9] * max(self.params.get('preprocess', 'p'), 1))[1:]
@@ -459,22 +462,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.estimates.lam = np.zeros(nr)
         else:
             raise Exception('Unknown initialization method!')
-        if mode == 'from_scope':
-            T1 = init_batch*self.params.get('online', 'epochs')
-        else:
-            _, Ts = cnmf.utilities.get_file_size(fls, var_name_hdf5=self.params.get('data', 'var_name_hdf5'))
-            T1 = np.array(Ts).sum()*self.params.get('online', 'epochs')
-        dims = Y.shape[1:]
-        self.params.set('data', {'dims': dims})
-        logging.info('before prepare')
+        T1 = init_batch * self.params.get('online', 'epochs')
+        self.params.set('data', {'dims': Y.shape[1:]})
         self._prepare_object(Yr, T1)
-        logging.info('after prepare')
-        if opts['show_movie']:
-            self.bnd_AC = np.percentile(self.estimates.A.dot(self.estimates.C),
-                                        (0.001, 100-0.005))
-            #self.bnd_BG = np.percentile(self.estimates.b.dot(self.estimates.f),
-            #                            (0.001, 100-0.001))
-        logging.info('end')
         return self
 
     def fit_next_from_raw(self, frame, t, model_LN=None, out=None):
@@ -571,6 +561,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         return time.time() - t_frame_start
 
     def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None, seed_file=None, **kargs):
+        self.seed_file = seed_file
         init_batch = self.params.get('online', 'init_batch')
         epochs = self.params.get('online', 'epochs')
         dir_path = os.path.dirname(out_file_name)
@@ -614,17 +605,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         with h5py.File(out_file_name + '.mat', 'w') as f:
             f['initialize_first_frame_t'] = time.time()
 
-        # TODO: need to finish implementation of seed mode
-        if self.params.get('online', 'init_method') == 'seeded':
-            if seed_file is None:
-                raise ValueError('Please input analyzed mat file.')
-            with h5py.File(seed_file, 'r') as f:
-                ds_factor = self.params.get('online', 'ds_factor')
-                A_seed = f['A'][()].reshape(frame.shape[0], frame.shape[1], -1)
-                A_seed = cv2.resize(A_seed, (frame.shape[1]//ds_factor, frame.shape[0]//ds_factor))
-                A_seed = A_seed.reshape((-1, A_seed.shape[-1]), order='F')
-                self.estimates.A = A_seed
-
         prev_time = time.time()
         for i in range(init_batch):
             time_d = 1 / self.fps
@@ -663,11 +643,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('S', (self.N, 100), maxshape=(None, None))
 
         prev_time = time.time()
-        # self.comp_upd = []
-        # self.t_shapes:List = []
-        # self.t_detect:List = []
-        self.t_motion:List = []
-        # self.t_stat:List = []
+        self.t_motion = []
         while True:
             time_d = 1 / self.fps
             while time.time() - prev_time < time_d:
@@ -711,5 +687,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         
         with h5py.File(out_file_name + '.mat', 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
+            f.create_dataset('b0', data=self.estimates.b0)
+            f.create_dataset('W', data=self.estimates.W)
         avi_out.release()
         return self
