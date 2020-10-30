@@ -688,6 +688,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         with h5py.File(out_file_name + '.mat', 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
             f.create_dataset('b0', data=self.estimates.b0)
-            f.create_dataset('W', data=self.estimates.W)
+            f.create_dataset('W', data=self.estimates.W.toarray())
         avi_out.release()
         return self
