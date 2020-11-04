@@ -146,6 +146,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         super().__init__(params=params, estimates=estimates, path=path, dview=dview)
         self.time_frame = 0
         self.seed_file = None
+        self.sync_patterns = None
 
     def __init_window_status(self, frame_shape, max_bright):
         self.window_name = 'microscope CNMF-E'
@@ -222,6 +223,23 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             plots_mapped[half_h:even_h, half_w:even_w] = colored
 
         self.plot = plots_mapped
+
+    def __set_results(self, epochs, t):
+        if self.params.get('online', 'normalize'):
+            self.estimates.Ab = csc_matrix(self.estimates.Ab.multiply(
+                self.img_norm.reshape(-1, order='F')[:, np.newaxis]))
+        self.estimates.A, self.estimates.b = self.estimates.Ab[:, self.params.get('init', 'nb'):], self.estimates.Ab[:, :self.params.get('init', 'nb')].toarray()
+        self.estimates.C, self.estimates.f = self.estimates.C_on[self.params.get('init', 'nb'):self.M, t - t //
+                         epochs:t], self.estimates.C_on[:self.params.get('init', 'nb'), t - t // epochs:t]
+        noisyC = self.estimates.noisyC[self.params.get('init', 'nb'):self.M, t - t // epochs:t]
+        self.estimates.YrA = noisyC - self.estimates.C
+        if self.estimates.OASISinstances is not None:
+            self.estimates.bl = [osi.b for osi in self.estimates.OASISinstances]
+            self.estimates.S = np.stack([osi.s for osi in self.estimates.OASISinstances])
+            self.estimates.S = self.estimates.S[:, t - t // epochs:t]
+        else:
+            self.estimates.bl = [0] * self.estimates.C.shape[0]
+            self.estimates.S = np.zeros_like(self.estimates.C)
 
     def __prepare_window(self, mode, frame_shape, max_bright):
         h, w = frame_shape
@@ -313,24 +331,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             model_LN = None
         return model_LN
 
-    def __set_results(self, epochs, t):
-        if self.params.get('online', 'normalize'):
-            self.estimates.Ab = csc_matrix(self.estimates.Ab.multiply(
-                self.img_norm.reshape(-1, order='F')[:, np.newaxis]))
-        self.estimates.A, self.estimates.b = self.estimates.Ab[:, self.params.get('init', 'nb'):], self.estimates.Ab[:, :self.params.get('init', 'nb')].toarray()
-        self.estimates.C, self.estimates.f = self.estimates.C_on[self.params.get('init', 'nb'):self.M, t - t //
-                         epochs:t], self.estimates.C_on[:self.params.get('init', 'nb'), t - t // epochs:t]
-        noisyC = self.estimates.noisyC[self.params.get('init', 'nb'):self.M, t - t // epochs:t]
-        self.estimates.YrA = noisyC - self.estimates.C
-        if self.estimates.OASISinstances is not None:
-            self.estimates.bl = [osi.b for osi in self.estimates.OASISinstances]
-            self.estimates.S = np.stack([osi.s for osi in self.estimates.OASISinstances])
-            self.estimates.S = self.estimates.S[:, t - t // epochs:t]
-        else:
-            self.estimates.bl = [0] * self.estimates.C.shape[0]
-            self.estimates.S = np.zeros_like(self.estimates.C)
-
-    def initialize_online(self, model_LN, Y):
+    def __initialize_online(self, model_LN, Y):
         _, original_d1, original_d2 = Y.shape
         opts = self.params.get_group('online')
         init_batch = opts['init_batch']
@@ -468,7 +469,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self._prepare_object(Yr, T1)
         return self
 
-    def fit_next_from_raw(self, frame, t, model_LN=None, out=None):
+    def __fit_next_from_raw(self, frame, t, model_LN=None, out=None):
         ssub_B = self.params.get('init', 'ssub_B') * self.params.get('init', 'ssub')
         d1, d2 = self.params.get('data', 'dims')
         max_shifts_online = self.params.get('online', 'max_shifts_online')
@@ -561,13 +562,19 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 pass
         return time.time() - t_frame_start
 
-    def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None, seed_file=None, **kargs):
+    def __shoot_laser(self):
+        pass
+
+    def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None, seed_file=None, sync_pattern_file=None, **kargs):
         self.seed_file = seed_file
         init_batch = self.params.get('online', 'init_batch')
         epochs = self.params.get('online', 'epochs')
         dir_path = os.path.dirname(out_file_name)
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
+
+        with h5py.File(sync_pattern_file, 'r') as f:
+            self.sync_patterns = f['sync_pattern'][()]
 
         # set some camera params
         if input_avi_path is None:
@@ -622,11 +629,10 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         logging.info('now initializing...')
         Y_init = caiman.base.movies.movie(init_Y.astype(np.float32))
-        self.initialize_online(model_LN=model_LN, Y=Y_init)
+        self.__initialize_online(model_LN=model_LN, Y=Y_init)
 
         logging.info('now running CNMF-E')
         self.__prepare_window(mode='analyze', frame_shape=(h, w), max_bright=max_bright)
-        t_online = []
 
         def get_resized_a(idx, normalize=True):
             a_i = self.estimates.A[:, idx]
@@ -679,7 +685,12 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                     f['S'][()] = self.estimates.S
 
             frame = self.__show_next_frame(f'FPS: {fps:.4f}', mode='analyze', avi_out=avi_out)
-            t_online.append(self.fit_next_from_raw(frame, self.time_frame, model_LN=model_LN))
+            self.__fit_next_from_raw(frame, self.time_frame, model_LN=model_LN)
+            if self.sync_patterns:
+                latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, t-1:t].squeeze()
+                if np.any(np.all(self.sync_patterns < latest, axis=1)):
+                    self.__shoot_laser()
+
             self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
