@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from math import sqrt
 
 import cv2
 import h5py
@@ -110,11 +111,11 @@ def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
     if compute_corr:
         keep_corr = []
         for i, (ain, Ypx) in enumerate(zip(Ain, Y_patch)):
-            ain, cin, cin_res = rank1nmf(Ypx, ain)
+            ain, cin, cin_res = online_cnmf.rank1nmf(Ypx, ain)
             Ain[i] = ain
             Cin.append(cin)
             Cin_res.append(cin_res)
-            rval = corr(ain.copy(), np.mean(Ypx, -1))
+            rval = online_cnmf.corr(ain.copy(), np.mean(Ypx, -1))
             if rval > rval_thr:
                 keep_corr.append(i)
         keep_final:List = list(set().union(keep_cnn, keep_corr))
@@ -130,7 +131,7 @@ def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
         Y_patch = [Yres_buf.T[all_indices[kp]] for kp in keep_cnn]
         idx = list(np.array(idx)[keep_cnn])
         for i, (ain, Ypx) in enumerate(zip(Ain, Y_patch)):
-            ain, cin, cin_res = rank1nmf(Ypx, ain)
+            ain, cin, cin_res = online_cnmf.rank1nmf(Ypx, ain)
             Ain[i] = ain
             Cin.append(cin)
             Cin_res.append(cin_res)
@@ -171,6 +172,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.y1 = h
         self.dr_min = 0
         self.dr_max = max_bright
+        self.is_shoot = False
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -245,8 +247,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         h, w = frame_shape
         cv2.destroyAllWindows()
         cv2.namedWindow(self.window_name)
-        cv2.createTrackbar(self.gain_text, self.window_name, 0, 2, self.__set_gain)
         if mode == 'prepare':
+            cv2.createTrackbar(self.gain_text, self.window_name, 0, 2, self.__set_gain)
             cv2.createTrackbar(self.fps_text, self.window_name, 1, 4, self.__set_fps)
             cv2.createTrackbar(self.x0_text, self.window_name, 0, w, lambda x:x)
             cv2.createTrackbar(self.x1_text, self.window_name, w, w, lambda x:x)
@@ -255,12 +257,16 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             cv2.createTrackbar(self.start_text, self.window_name, 0, 1, lambda x: True if x == 0 else False)
         elif mode == 'analyze':
             cv2.createTrackbar(self.demixed_bias_text, self.window_name, 1, 10, lambda x:x)
-        cv2.createTrackbar(self.dr_min_text, self.window_name, 0, max_bright, lambda x:x)
-        cv2.createTrackbar(self.dr_max_text, self.window_name, max_bright, max_bright, lambda x:x)
+        
+        if mode != 'initialize':
+            cv2.createTrackbar(self.dr_min_text, self.window_name, 0, max_bright, lambda x:x)
+            cv2.createTrackbar(self.dr_max_text, self.window_name, max_bright, max_bright, lambda x:x)
 
     def __show_next_frame(self, text, mode, text_color=(255, 255, 255), avi_out=None):
         _, frame = self.cap.read()
+
         if mode == 'prepare':
+            cv2.getTrackbarPos(self.gain_text, self.window_name)
             self.x0 = cv2.getTrackbarPos(self.x0_text, self.window_name)
             self.x1 = cv2.getTrackbarPos(self.x1_text, self.window_name)
             self.y0 = cv2.getTrackbarPos(self.y0_text, self.window_name)
@@ -268,21 +274,21 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             cv2.getTrackbarPos(self.fps_text, self.window_name)
         elif mode == 'analyze':
             self.demixed_bias = cv2.getTrackbarPos(self.demixed_bias_text, self.window_name)
-        cv2.getTrackbarPos(self.gain_text, self.window_name)
 
         frame = frame[self.y0:self.y1, self.x0:self.x1]
         if avi_out != None:
             avi_out.write(frame)
         out_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        self.dr_min = cv2.getTrackbarPos(self.dr_min_text, self.window_name)
-        self.dr_max = cv2.getTrackbarPos(self.dr_max_text, self.window_name)
-        frame = frame.astype('float')
-        frame[frame < self.dr_min] = self.dr_min
-        frame[frame > self.dr_max] = self.dr_max
-        frame -= self.dr_min
-        frame *= 255 / (self.dr_max - self.dr_min)
-        frame = frame.astype('uint8')
+        if mode != 'initialize':
+            self.dr_min = cv2.getTrackbarPos(self.dr_min_text, self.window_name)
+            self.dr_max = cv2.getTrackbarPos(self.dr_max_text, self.window_name)
+            frame = frame.astype('float')
+            frame[frame < self.dr_min] = self.dr_min
+            frame[frame > self.dr_max] = self.dr_max
+            frame -= self.dr_min
+            frame *= 255 / (self.dr_max - self.dr_min)
+            frame = frame.astype('uint8')
 
         if mode == 'analyze':
             frame = np.hstack([frame, self.plot])
@@ -573,8 +579,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
 
-        with h5py.File(sync_pattern_file, 'r') as f:
-            self.sync_patterns = f['sync_pattern'][()]
+        if sync_pattern_file != None:
+            with h5py.File(sync_pattern_file, 'r') as f:
+                self.sync_patterns = f['sync_pattern'][()]
 
         # set some camera params
         if input_avi_path is None:
@@ -684,12 +691,19 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                     f['S'].resize(self.estimates.S.shape)
                     f['S'][()] = self.estimates.S
 
-            frame = self.__show_next_frame(f'FPS: {fps:.4f}', mode='analyze', avi_out=avi_out)
+            comp_num = self.M - self.params.get('init', 'nb')
+            if self._is_shoot:
+                frame = self.__show_next_frame(f'FPS: {fps:.4f}, neurons: {comp_num}, SHOOT!!!', mode='analyze', avi_out=avi_out, text_color=(255, 0, 0))
+            else:
+                frame = self.__show_next_frame(f'FPS: {fps:.4f}, neurons: {comp_num}', mode='analyze', avi_out=avi_out)
+
             self.__fit_next_from_raw(frame, self.time_frame, model_LN=model_LN)
             if self.sync_patterns:
                 latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, t-1:t].squeeze()
+                self.is_shoot = False
                 if np.any(np.all(self.sync_patterns < latest, axis=1)):
                     self.__shoot_laser()
+                    self.is_shoot = True
 
             self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):

@@ -46,8 +46,8 @@ def prepare_onacid():
         'expected_comps': 500,                       # maximum number of expected components used for memory pre-allocation (exaggerate here)
         'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
-        # 'min_num_trial': 5,                          # number of candidate components per frame
-        'min_num_trial': 0,
+        'min_num_trial': 5,                          # number of candidate components per frame
+        # 'min_num_trial': 0,
         'use_corr_img': True,                        # flag for using the corr*pnr image when searching for new neurons (otherwise residual)
         'show_movie': False,                         # show the movie with the results as the data gets processed
         'motion_correct': True,
