@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
-from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
+from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization, utilities
 from scipy.sparse import csc_matrix, spdiags
 from past.utils import old_div
 from sklearn.decomposition import NMF
@@ -46,7 +46,7 @@ def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
                     - cv2.boxFilter(img_select_peaks, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REPLICATE)
         thresh_img_sel = 0
 
-        local_maxima = cnmf.utilities.peak_local_max(img_select_peaks,
+        local_maxima = utilities.peak_local_max(img_select_peaks,
                                       min_distance=np.max(np.array(gSig)).astype(np.int),
                                       num_peaks=min_num_trial,threshold_abs=thresh_img_sel, exclude_border = False)
         min_num_trial = np.minimum(len(local_maxima),min_num_trial)
@@ -138,7 +138,8 @@ def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
     return Ain, Cin, Cin_res, idx, ijsig_all, cnn_pos, local_maxima
 
 # overwrite original 'get_candidate_components' function
-# online_cnmf.get_candidate_components = get_candidate_components
+# どこでやっても良さそう
+online_cnmf.get_candidate_components = get_candidate_components
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
