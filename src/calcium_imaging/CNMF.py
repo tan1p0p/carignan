@@ -10,10 +10,13 @@ import numpy as np
 import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization, utilities
+from cnmfereview.utils import crop_footprint, process_traces
 from scipy.sparse import csc_matrix, spdiags
 from past.utils import old_div
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
+
+from utils.laser_handler import select_port, show_connection, shoot_laser
 
 def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
                              gHalf=(5, 5), sniper_mode=True, rval_thr=0.85,
@@ -140,7 +143,7 @@ def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
 
 # overwrite original 'get_candidate_components' function
 # どこでやっても良さそう
-online_cnmf.get_candidate_components = get_candidate_components
+# online_cnmf.get_candidate_components = get_candidate_components
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
@@ -148,6 +151,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.time_frame = 0
         self.seed_file = None
         self.sync_patterns = None
+        self.checked_comps = 0
 
     def __init_window_status(self, frame_shape, max_bright):
         self.window_name = 'microscope CNMF-E'
@@ -173,6 +177,12 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.dr_min = 0
         self.dr_max = max_bright
         self.is_shoot = False
+
+    def __init_serial_status(self):
+        self.serial_power = 60000
+        self.serial_seconds = 0.5
+        self.ser = select_port()
+        show_connection(self.ser)
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -568,8 +578,20 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 pass
         return time.time() - t_frame_start
 
+    def __reject_fp_comps(self):
+        trace_len = 500
+        if self.estimates.C.shape[1] < trace_len:
+            return False
+        spatial = crop_footprint(self.estimates.A[:, self.checked_comps:].toarray())
+        traces = process_traces(self.estimates.C[self.checked_comps:], trace_len)
+        spatial_flattened = np.reshape(spatial, [len(spatial), spatial.shape[1] * spatial.shape[2]])
+        combined = np.concatenate((spatial_flattened, trace), axis=1)
+        breakpoint()
+        pass # reject error comps
+        self.checked_comps += 100 # update checked_comps
+
     def __shoot_laser(self):
-        pass
+        shoot_laser(self.ser, self.serial_power, self.serial_seconds)
 
     def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None, seed_file=None, sync_pattern_file=None, **kargs):
         self.seed_file = seed_file
@@ -582,6 +604,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if sync_pattern_file != None:
             with h5py.File(sync_pattern_file, 'r') as f:
                 self.sync_patterns = f['sync_pattern'][()]
+            self.__init_serial_status()
 
         # set some camera params
         if input_avi_path is None:
@@ -669,6 +692,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.__set_plot(self.time_frame, frame_shape=(h, w), with_demixed=True)
             if self.time_frame % 100 == 0:
                 self.__set_results(1, self.time_frame)
+                if self.params.get('online', 'init_method') != 'seeded':
+                    self.__reject_fp_comps()
                 self.estimates.noisyC = np.hstack(
                     (self.estimates.noisyC, np.zeros((self.estimates.noisyC.shape[0], 100))))
                 self.estimates.C_on = np.hstack(
@@ -692,7 +717,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                     f['S'][()] = self.estimates.S
 
             comp_num = self.M - self.params.get('init', 'nb')
-            if self._is_shoot:
+            if self.is_shoot:
                 frame = self.__show_next_frame(f'FPS: {fps:.4f}, neurons: {comp_num}, SHOOT!!!', mode='analyze', avi_out=avi_out, text_color=(255, 0, 0))
             else:
                 frame = self.__show_next_frame(f'FPS: {fps:.4f}, neurons: {comp_num}', mode='analyze', avi_out=avi_out)
@@ -716,4 +741,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('b0', data=self.estimates.b0)
             f.create_dataset('W', data=self.estimates.W.toarray())
         avi_out.release()
+        try:
+            self.ser.close()
+        except:
+            pass
         return self

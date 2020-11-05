@@ -44,7 +44,8 @@ def prepare_onacid():
         'normalize_init': False,
         'update_freq': 200,
         'expected_comps': 500,                       # maximum number of expected components used for memory pre-allocation (exaggerate here)
-        'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
+        # 'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
+        'sniper_mode': True,
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
         'min_num_trial': 5,                          # number of candidate components per frame
         # 'min_num_trial': 0,
