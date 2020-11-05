@@ -1,5 +1,6 @@
 import logging
 import os
+import multiprocessing
 import sys
 import time
 from math import sqrt
@@ -186,6 +187,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
+        cap.set(14, gain[x])
         time.sleep(0.01)
         logging.info(f'camera gain was set to {self.cap.get(14)}')
 
@@ -236,7 +238,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         self.plot = plots_mapped
 
-    def __set_results(self, epochs, t):
+    def __set_results(self, t):
+        epochs = self.params.get('online', 'epochs')
         if self.params.get('online', 'normalize'):
             self.estimates.Ab = csc_matrix(self.estimates.Ab.multiply(
                 self.img_norm.reshape(-1, order='F')[:, np.newaxis]))
@@ -252,6 +255,19 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             self.estimates.bl = [0] * self.estimates.C.shape[0]
             self.estimates.S = np.zeros_like(self.estimates.C)
+
+    def __save_results(self, frame):
+        if self.params.get('online', 'ds_factor') > 1:
+            neuron_num = self.estimates.A.shape[-1]
+            A = np.hstack([cv2.resize(self.estimates.A[:, i].reshape(self.estimates.dims, order='F').toarray(),
+                                    frame.shape[::-1]).reshape(-1, order='F')[:,None] for i in range(neuron_num)])
+        with h5py.File(self.out_mat_file, 'a') as f:
+            f['A'].resize(A.shape)
+            f['A'][()] = A
+            f['C'].resize(self.estimates.C.shape)
+            f['C'][()] = self.estimates.C
+            f['S'].resize(self.estimates.S.shape)
+            f['S'][()] = self.estimates.S
 
     def __prepare_window(self, mode, frame_shape, max_bright):
         h, w = frame_shape
@@ -307,9 +323,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         cv2.imshow(self.window_name, frame)
         return out_frame
 
+    # TODO: need to refactor
     def __get_model_LN(self):
         if self.params.get('online', 'ring_CNN'):
-            pass
             logging.info('Using Ring CNN model')
             from caiman.utils.nn_models import (fit_NL_model, create_LN_model, quantile_loss, rate_scheduler)
             gSig = self.params.get('init', 'gSig')[0]
@@ -323,7 +339,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 sch = None
             else:
                 sch = rate_scheduler(*self.params.get('ring_CNN', 'lr_scheduler'))
-            Y = caiman.base.movies.load(fls[0], subindices=slice(init_batch),
+            Y = caiman.base.movies.load(fls[0],
+                                        subindices=slice(self.params.get('online', 'init_batch')),
                                         var_name_hdf5=self.params.get('data', 'var_name_hdf5'))
             shape = Y.shape[1:] + (1,)
             logging.info('Starting background model training.')
@@ -347,6 +364,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             model_LN = None
         return model_LN
 
+    # TODO: need to refactor
     def __initialize_online(self, model_LN, Y):
         _, original_d1, original_d2 = Y.shape
         opts = self.params.get_group('online')
@@ -560,7 +578,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if self.params.get('online', 'normalize'):
             frame_cor = frame_cor/self.img_norm
         # Fit next frame
-        self.fit_next(t, frame_cor.reshape(-1, order='F')) # MEMO: ここでfit_nextが呼ばれてる→その前に色々ある
+        self.fit_next(t, frame_cor.reshape(-1, order='F'))
         # Show
         if self.params.get('online', 'show_movie'):
             self.t = t
@@ -593,10 +611,11 @@ class MiniscopeOnACID(online_cnmf.OnACID):
     def __shoot_laser(self):
         shoot_laser(self.ser, self.serial_power, self.serial_seconds)
 
-    def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None, seed_file=None, sync_pattern_file=None, **kargs):
+    def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None,
+                       seed_file=None, sync_pattern_file=None, **kargs):
         self.seed_file = seed_file
-        init_batch = self.params.get('online', 'init_batch')
-        epochs = self.params.get('online', 'epochs')
+        self.out_mat_file = out_file_name + '.mat'
+        self.out_avi_file = out_file_name + '.avi'
         dir_path = os.path.dirname(out_file_name)
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
@@ -621,7 +640,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.__init_window_status((max_h, max_w), max_bright)
         self.__prepare_window(mode='prepare', frame_shape=(max_h, max_w), max_bright=max_bright)
 
-        logging.info('now preparing')
         prev_time = time.time()
         while True:
             time_d = 1 / self.fps
@@ -634,17 +652,16 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         h, w = frame.shape
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        avi_out = cv2.VideoWriter(out_file_name + '.avi', fourcc, 10.0, (w, h))
+        avi_out = cv2.VideoWriter(self.out_avi_file, fourcc, 10.0, (w, h))
 
-        logging.info('now recording for init')
         self.__prepare_window(mode='initialize', frame_shape=(h, w), max_bright=max_bright)
-        init_Y = np.empty((init_batch,) + frame.shape)
+        init_Y = np.empty((self.params.get('online', 'init_batch'),) + frame.shape)
 
-        with h5py.File(out_file_name + '.mat', 'w') as f:
+        with h5py.File(self.out_mat_file, 'w') as f:
             f['initialize_first_frame_t'] = time.time()
 
         prev_time = time.time()
-        for i in range(init_batch):
+        for i in range(self.params.get('online', 'init_batch')):
             time_d = 1 / self.fps
             while time.time() - prev_time < time_d:
                 pass
@@ -652,27 +669,17 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             frame = self.__show_next_frame('initialize', mode='initialize', avi_out=avi_out)
             init_Y[i] = frame.copy()
             cv2.waitKey(1)
-        self.time_frame += init_batch
+        self.time_frame += self.params.get('online', 'init_batch')
 
-        with h5py.File(out_file_name + '.mat', 'a') as f:
+        with h5py.File(self.out_mat_file, 'a') as f:
             f['initialize_last_frame_t'] = time.time()
 
-        logging.info('now initializing...')
         Y_init = caiman.base.movies.movie(init_Y.astype(np.float32))
         self.__initialize_online(model_LN=model_LN, Y=Y_init)
 
-        logging.info('now running CNMF-E')
         self.__prepare_window(mode='analyze', frame_shape=(h, w), max_bright=max_bright)
 
-        def get_resized_a(idx, normalize=True):
-            a_i = self.estimates.A[:, idx]
-            a_i = a_i.reshape((self.estimates.dims[1], self.estimates.dims[0])).T
-            a_i = cv2.resize(a_i.toarray(), (w, h))
-            if normalize:
-                a_i = a_i / a_i.max() * 255
-            return a_i
-
-        with h5py.File(out_file_name + '.mat', 'a') as f:
+        with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_first_frame_t'] = time.time()
             A_size = frame.shape[0] * frame.shape[1]
             f.create_dataset('A', (A_size, self.N), maxshape=(A_size, None))
@@ -691,30 +698,15 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             # try:
             self.__set_plot(self.time_frame, frame_shape=(h, w), with_demixed=True)
             if self.time_frame % 100 == 0:
-                self.__set_results(1, self.time_frame)
+                self.__set_results(self.time_frame)
                 if self.params.get('online', 'init_method') != 'seeded':
                     self.__reject_fp_comps()
                 self.estimates.noisyC = np.hstack(
                     (self.estimates.noisyC, np.zeros((self.estimates.noisyC.shape[0], 100))))
                 self.estimates.C_on = np.hstack(
                     (self.estimates.C_on, np.zeros((self.estimates.C_on.shape[0], 100))))
-            elif self.time_frame % 100 == 10:
-                if self.params.get('online', 'ds_factor') > 1:
-                    neuron_num = self.estimates.A.shape[-1]
-                    A = np.hstack([cv2.resize(self.estimates.A[:, i].reshape(self.estimates.dims, order='F').toarray(),
-                                            frame.shape[::-1]).reshape(-1, order='F')[:,None] for i in range(neuron_num)])
-            elif self.time_frame % 100 == 20:
-                with h5py.File(out_file_name + '.mat', 'a') as f:
-                    f['A'].resize(A.shape)
-                    f['A'][()] = A
-            elif self.time_frame % 100 == 30:
-                with h5py.File(out_file_name + '.mat', 'a') as f:
-                    f['C'].resize(self.estimates.C.shape)
-                    f['C'][()] = self.estimates.C
-            elif self.time_frame % 100 == 40:
-                with h5py.File(out_file_name + '.mat', 'a') as f:
-                    f['S'].resize(self.estimates.S.shape)
-                    f['S'][()] = self.estimates.S
+                p = multiprocessing.Process(target=self.__save_results, args=[frame])
+                p.start()
 
             comp_num = self.M - self.params.get('init', 'nb')
             if self.is_shoot:
@@ -736,7 +728,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             # except:
             #     print(sys.exc_info())
         
-        with h5py.File(out_file_name + '.mat', 'a') as f:
+        with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
             f.create_dataset('b0', data=self.estimates.b0)
             f.create_dataset('W', data=self.estimates.W.toarray())
