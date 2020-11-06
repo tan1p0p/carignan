@@ -4,8 +4,8 @@ import sys
 
 from caiman.source_extraction.cnmf import params
 
-from calcium_imaging.CNMF import MiniscopeOnACID
-from utils.utils import show_logs
+from modules.cnmf import MiniscopeOnACID
+from modules.utils import show_logs
 
 root = './'
 
@@ -35,7 +35,7 @@ def prepare_onacid():
         'max_shifts_online': 20,
         'rval_thr': 0.85,                            # correlation threshold for new component inclusion
         'motion_correct': True,
-        'init_batch': 100,                          # number of frames for initialization (presumably from the first file)
+        'init_batch': 500,                          # number of frames for initialization (presumably from the first file)
         'only_init': True,
         
         # 'init_method': 'bare',

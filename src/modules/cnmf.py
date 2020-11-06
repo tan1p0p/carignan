@@ -12,12 +12,13 @@ import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization, utilities
 from cnmfereview.utils import crop_footprint, process_traces
+from joblib import load
 from scipy.sparse import csc_matrix, spdiags
 from past.utils import old_div
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
 
-from utils.laser_handler import select_port, show_connection, shoot_laser
+from modules.laser_handler import select_port, show_connection, shoot_laser
 
 def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
                              gHalf=(5, 5), sniper_mode=True, rval_thr=0.85,
@@ -184,6 +185,12 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.serial_seconds = 0.5
         self.ser = select_port()
         show_connection(self.ser)
+
+    def __init_models(self):
+        self.model_dir = './models'
+        breakpoint()
+        self.askl_model = load(os.path.join(self.model_dir, 'askl.joblib'))
+        self.tpot_model = load(os.path.join(self.model_dir, 'tpot.joblib'))
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -600,12 +607,29 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         trace_len = 500
         if self.estimates.C.shape[1] < trace_len:
             return False
-        spatial = crop_footprint(self.estimates.A[:, self.checked_comps:].toarray())
-        traces = process_traces(self.estimates.C[self.checked_comps:], trace_len)
-        spatial_flattened = np.reshape(spatial, [len(spatial), spatial.shape[1] * spatial.shape[2]])
-        combined = np.concatenate((spatial_flattened, trace), axis=1)
+
+        spatial = np.asarray(self.estimates.A[:, self.checked_comps:])
+        spatial = spatial.reshape(self.estimates.dims + (-1,), order='F').transpose(2, 0, 1)
+        spatial = crop_footprint(spatial, 80)
+        spatial = spatial.reshape((spatial.shape[0], -1))
+        trace = process_traces(self.estimates.C[self.checked_comps:], trace_len)
+        combined = np.concatenate((spatial, trace), axis=1)
         breakpoint()
-        pass # reject error comps
+
+        model = 'askl'
+        if model == 'askl':
+            pred = self.askl_model.predict(combined)
+        elif model == 'tpot':
+            pred = self.tpot_model.predict(combined)
+        elif model == 'deep':
+            pred = self.deep_model.predict(combined)
+        else:
+            raise ValueError('Unsupported model!!')
+
+        
+        breakpoint()
+
+        pass # reject fp comps
         self.checked_comps += 100 # update checked_comps
 
     def __shoot_laser(self):
@@ -661,8 +685,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f['initialize_first_frame_t'] = time.time()
 
         prev_time = time.time()
+        time_d = 1 / self.fps
         for i in range(self.params.get('online', 'init_batch')):
-            time_d = 1 / self.fps
             while time.time() - prev_time < time_d:
                 pass
             prev_time = time.time()
@@ -677,6 +701,10 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         Y_init = caiman.base.movies.movie(init_Y.astype(np.float32))
         self.__initialize_online(model_LN=model_LN, Y=Y_init)
 
+        # if self.params.get('online', 'init_method') != 'seeded':
+        self.__init_models()
+        self.__reject_fp_comps()
+
         self.__prepare_window(mode='analyze', frame_shape=(h, w), max_bright=max_bright)
 
         with h5py.File(self.out_mat_file, 'a') as f:
@@ -686,10 +714,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('C', (self.N, 100), maxshape=(None, None))
             f.create_dataset('S', (self.N, 100), maxshape=(None, None))
 
-        prev_time = time.time()
         self.t_motion = []
+        prev_time = time.time()
         while True:
-            time_d = 1 / self.fps
             while time.time() - prev_time < time_d:
                 pass
             fps = 1 / (time.time() - prev_time)
