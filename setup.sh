@@ -14,3 +14,14 @@ python caimanmanager.py install
 cd ../
 rm -rf CaImAn/
 
+# install auto-sklearn
+curl https://raw.githubusercontent.com/automl/auto-sklearn/master/requirements.txt | xargs -n 1 -L 1 pip install
+pip install auto-sklearn
+
+# install cnmfe-reviewer from source
+git clone git@github.com:jf-lab/cnmfe-reviewer.git
+cd cnmfe-reviewer
+pip install .
+mv data/ ../data/cnmfe-reviewer
+cd ../
+rm -rf cnmfe-reviewer/ 

@@ -20,10 +20,13 @@ pims
 psutil
 pynwb
 pyqtgraph
+pyserial
 scikit-image
 scikit-learn
 scipy
+seaborn
 tensorflow
 tifffile
+torch
 tqdm
 yapf
