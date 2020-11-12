@@ -24,7 +24,9 @@ pyserial
 scikit-image
 scikit-learn
 scipy
+seaborn
 tensorflow
 tifffile==0.15.1
+torch
 tqdm
 yapf

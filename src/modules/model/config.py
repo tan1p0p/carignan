@@ -4,9 +4,9 @@ exp_id = "cr_tutorial"
 
 data_paths = {
     # modify these as necessary for your data
-    "data_directory": "../data",
-    "spatial": "data_A.npy",
-    "trace": "data_Craw.npy",
+    "data_directory": "../data/cnmfe-reviewer/",
+    "spatial": "cr_tutorialA_cropped.npy",
+    "trace": "cr_tutorialCraw_normalized.npy",
     "targets": "scores.npy"
 }
 

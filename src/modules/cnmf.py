@@ -10,142 +10,14 @@ import h5py
 import numpy as np
 import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
-from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization, utilities
+from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
 from cnmfereview.utils import crop_footprint, process_traces
 from joblib import load
-from scipy.sparse import csc_matrix, spdiags
-from past.utils import old_div
+from scipy.sparse import csc_matrix
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
 
 from modules.laser_handler import select_port, show_connection, shoot_laser
-
-def get_candidate_components(sv, dims, Yres_buf, min_num_trial=3, gSig=(5, 5),
-                             gHalf=(5, 5), sniper_mode=True, rval_thr=0.85,
-                             patch_size=50, loaded_model=None, test_both=False,
-                             thresh_CNN_noisy=0.5, use_peak_max=False,
-                             thresh_std_peak_resid = 1, mean_buff=None,
-                             tf_in=None, tf_out=None):
-    """
-    Extract new candidate components from the residual buffer and test them
-    using space correlation or the CNN classifier. The function runs the CNN
-    classifier in batch mode which can bring speed improvements when
-    multiple components are considered in each timestep.
-    """
-    Ain = []
-    Ain_cnn = []
-    Cin = []
-    Cin_res = []
-    idx = []
-    all_indices = []
-    ijsig_all = []
-    cnn_pos:List = []
-    local_maxima:List = []
-    Y_patch = []
-    ksize = tuple([int(3 * i / 2) * 2 + 1 for i in gSig])
-    compute_corr = test_both
-
-    if use_peak_max:
-        img_select_peaks = sv.reshape(dims).copy()
-        img_select_peaks = cv2.GaussianBlur(img_select_peaks , ksize=ksize, sigmaX=gSig[0],
-                                                        sigmaY=gSig[1], borderType=cv2.BORDER_REPLICATE) \
-                    - cv2.boxFilter(img_select_peaks, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REPLICATE)
-        thresh_img_sel = 0
-
-        local_maxima = utilities.peak_local_max(img_select_peaks,
-                                      min_distance=np.max(np.array(gSig)).astype(np.int),
-                                      num_peaks=min_num_trial,threshold_abs=thresh_img_sel, exclude_border = False)
-        min_num_trial = np.minimum(len(local_maxima),min_num_trial)
-
-    for i in range(min_num_trial):
-        if use_peak_max:
-            ij = local_maxima[i]
-        else:
-            ind = np.argmax(sv)
-            ij = np.unravel_index(ind, dims, order='C')
-            local_maxima.append(ij)
-
-        ij = [min(max(ij_val, g_val), dim_val-g_val-1)
-              for ij_val, g_val, dim_val in zip(ij, gHalf, dims)]
-        ind = np.ravel_multi_index(ij, dims, order='C')
-        ijSig = [[max(i - g, 0), min(i+g+1, d)] for i, g, d in zip(ij, gHalf, dims)]
-        ijsig_all.append(ijSig)
-        indices = np.ravel_multi_index(np.ix_(*[np.arange(ij[0], ij[1])
-                                                for ij in ijSig]), dims, order='F').ravel(order='C')
-        ain = np.maximum(mean_buff[indices], 0)
-
-        if sniper_mode:
-            half_crop_cnn = tuple([int(np.minimum(gs*2, patch_size/2)) for gs in gSig])
-            ij_cnn = [min(max(ij_val,g_val),dim_val-g_val-1) for ij_val, g_val, dim_val in zip(ij,half_crop_cnn,dims)]
-            ijSig_cnn = [[max(i - g, 0), min(i+g+1,d)] for i, g, d in zip(ij_cnn, half_crop_cnn, dims)]
-            indices_cnn = np.ravel_multi_index(np.ix_(*[np.arange(ij[0], ij[1])
-                            for ij in ijSig_cnn]), dims, order='F').ravel(order = 'C')
-            ain_cnn = mean_buff[indices_cnn]
-
-        else:
-            compute_corr = True  # determine when to compute corr coef
-
-        na = ain.dot(ain)
-        if na:
-            ain /= sqrt(na)
-            Ain.append(ain)
-            if compute_corr:
-                Y_patch.append(Yres_buf.T[indices, :])
-            else:
-                all_indices.append(indices)
-            idx.append(ind)
-            if sniper_mode:
-                Ain_cnn.append(ain_cnn)
-
-    if sniper_mode & (len(Ain_cnn) > 0):
-        Ain_cnn = np.stack(Ain_cnn)
-        Ain2 = Ain_cnn.copy()
-        Ain2 -= np.median(Ain2,axis=1)[:,None]
-        Ain2 /= np.std(Ain2,axis=1)[:,None]
-        Ain2 = np.reshape(Ain2,(-1,) + tuple(np.diff(ijSig_cnn).squeeze()),order= 'F')
-        Ain2 = np.stack([cv2.resize(ain,(patch_size ,patch_size)) for ain in Ain2])
-        if tf_in is None:
-            predictions = loaded_model.predict(Ain2[:,:,:,np.newaxis], batch_size=min_num_trial, verbose=0)
-        else:
-            predictions = loaded_model.run(tf_out, feed_dict={tf_in: Ain2[:, :, :, np.newaxis]})
-        keep_cnn = list(np.where(predictions[:, 0] > thresh_CNN_noisy)[0])
-        cnn_pos = Ain2[keep_cnn]
-    else:
-        keep_cnn = []  # list(range(len(Ain_cnn)))
-
-    if compute_corr:
-        keep_corr = []
-        for i, (ain, Ypx) in enumerate(zip(Ain, Y_patch)):
-            ain, cin, cin_res = online_cnmf.rank1nmf(Ypx, ain)
-            Ain[i] = ain
-            Cin.append(cin)
-            Cin_res.append(cin_res)
-            rval = online_cnmf.corr(ain.copy(), np.mean(Ypx, -1))
-            if rval > rval_thr:
-                keep_corr.append(i)
-        keep_final:List = list(set().union(keep_cnn, keep_corr))
-        if len(keep_final) > 0:
-            Ain = np.stack(Ain)[keep_final]
-        else:
-            Ain = []
-        Cin = [Cin[kp] for kp in keep_final]
-        Cin_res = [Cin_res[kp] for kp in keep_final]
-        idx = list(np.array(idx)[keep_final])
-    else:
-        Ain = [Ain[kp] for kp in keep_cnn]
-        Y_patch = [Yres_buf.T[all_indices[kp]] for kp in keep_cnn]
-        idx = list(np.array(idx)[keep_cnn])
-        for i, (ain, Ypx) in enumerate(zip(Ain, Y_patch)):
-            ain, cin, cin_res = online_cnmf.rank1nmf(Ypx, ain)
-            Ain[i] = ain
-            Cin.append(cin)
-            Cin_res.append(cin_res)
-
-    return Ain, Cin, Cin_res, idx, ijsig_all, cnn_pos, local_maxima
-
-# overwrite original 'get_candidate_components' function
-# どこでやっても良さそう
-# online_cnmf.get_candidate_components = get_candidate_components
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
@@ -188,9 +60,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
     def __init_models(self):
         self.model_dir = './models'
-        breakpoint()
-        self.askl_model = load(os.path.join(self.model_dir, 'askl.joblib'))
-        self.tpot_model = load(os.path.join(self.model_dir, 'tpot.joblib'))
+        # self.askl_model = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
+        self.tpot_model = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -203,11 +74,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         logging.info(f'fps was set to {self.fps}')
 
     def __set_plot(self, t, frame_shape, with_demixed=True):
-        def round_to_even(x):
-            return x if x % 2 == 0 else x - 1
         h, w = frame_shape
         half_w, half_h = w//2, h//2
-        even_w, even_h = round_to_even(w), round_to_even(h)
+        even_w, even_h = half_w*2, half_h*2
 
         bg = self.estimates.b0.reshape(self.estimates.dims, order='f').astype('uint8')
         if bg.shape[:2] != (half_h, half_w):
@@ -438,6 +307,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             else:
                 (self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f,
                  self.estimates.YrA) = tmp
+            self.__init_models()
+            self.__reject_fp_comps()
+
             self.estimates.S = np.zeros_like(self.estimates.C)
             nr = self.estimates.C.shape[0]
             self.estimates.g = np.array([-np.poly([0.9] * max(self.params.get('preprocess', 'p'), 1))[1:]
@@ -530,17 +402,14 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if np.isnan(np.sum(frame)):
             raise Exception('Current frame contains NaN')
 
-        # Downsample and normalize
         frame_ = frame.copy().astype(np.float32)
         if self.params.get('online', 'ds_factor') > 1:
             frame_ = cv2.resize(frame_, self.img_norm.shape[::-1])
 
         if self.params.get('online', 'normalize'):
             frame_ -= self.img_min     # make data non-negative
-        t_mot = time.time()
 
-        # Motion Correction
-        if self.params.get('online', 'motion_correct'):    # motion correct
+        if self.params.get('online', 'motion_correct'):
             templ = self.estimates.Ab.dot(
                     np.median(self.estimates.C_on[:self.M, t-51:t-1], 1)).reshape(self.params.get('data', 'dims'), order='F')#*self.img_norm
             if self.is1p and self.estimates.W is not None:
@@ -579,29 +448,11 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             templ = None
             frame_cor = frame_
 
-        self.t_motion.append(time.time() - t_mot)
         self.current_frame_cor = frame_cor
 
         if self.params.get('online', 'normalize'):
             frame_cor = frame_cor/self.img_norm
-        # Fit next frame
         self.fit_next(t, frame_cor.reshape(-1, order='F'))
-        # Show
-        if self.params.get('online', 'show_movie'):
-            self.t = t
-            vid_frame = self.create_frame(frame_cor, resize_fact=resize_fact)
-            if self.params.get('online', 'save_online_movie'):
-                out.write(vid_frame)
-                for rp in range(len(self.estimates.ind_new)*2):
-                    out.write(vid_frame)
-
-            cv2.imshow('frame', vid_frame)
-            for rp in range(len(self.estimates.ind_new)*2):
-                cv2.imshow('frame', vid_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                # break
-                pass
-        return time.time() - t_frame_start
 
     def __reject_fp_comps(self):
         trace_len = 500
@@ -616,7 +467,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         combined = np.concatenate((spatial, trace), axis=1)
         breakpoint()
 
-        model = 'askl'
+        model = 'tpot'
         if model == 'askl':
             pred = self.askl_model.predict(combined)
         elif model == 'tpot':
@@ -626,7 +477,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             raise ValueError('Unsupported model!!')
 
-        
+        pred < 0.5
         breakpoint()
 
         pass # reject fp comps
@@ -700,11 +551,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         Y_init = caiman.base.movies.movie(init_Y.astype(np.float32))
         self.__initialize_online(model_LN=model_LN, Y=Y_init)
-
-        # if self.params.get('online', 'init_method') != 'seeded':
-        self.__init_models()
-        self.__reject_fp_comps()
-
         self.__prepare_window(mode='analyze', frame_shape=(h, w), max_bright=max_bright)
 
         with h5py.File(self.out_mat_file, 'a') as f:
@@ -714,7 +560,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('C', (self.N, 100), maxshape=(None, None))
             f.create_dataset('S', (self.N, 100), maxshape=(None, None))
 
-        self.t_motion = []
         prev_time = time.time()
         while True:
             while time.time() - prev_time < time_d:
@@ -726,8 +571,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.__set_plot(self.time_frame, frame_shape=(h, w), with_demixed=True)
             if self.time_frame % 100 == 0:
                 self.__set_results(self.time_frame)
-                if self.params.get('online', 'init_method') != 'seeded':
-                    self.__reject_fp_comps()
                 self.estimates.noisyC = np.hstack(
                     (self.estimates.noisyC, np.zeros((self.estimates.noisyC.shape[0], 100))))
                 self.estimates.C_on = np.hstack(
