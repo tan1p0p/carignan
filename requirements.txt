@@ -24,6 +24,6 @@ scikit-image
 scikit-learn
 scipy
 tensorflow
-tifffile==0.15.1
+tifffile
 tqdm
 yapf
