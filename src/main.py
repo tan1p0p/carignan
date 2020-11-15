@@ -16,7 +16,7 @@ def prepare_onacid():
     gSig = 8 // ds_factor
     gSiz = 4 * gSig + 1
     params_dict = {
-        'fr': 5,
+        'fr': 10,
         'decay_time': 2,
         'gnb': 0,
         'epochs': 1,                                # number of passes over the data
@@ -33,13 +33,10 @@ def prepare_onacid():
         'bas_nonneg': False, 
         'center_psf': True,
         'max_shifts_online': 20,
-        'rval_thr': 0.85,                            # correlation threshold for new component inclusion
-        'motion_correct': True,
         'init_batch': 500,                          # number of frames for initialization (presumably from the first file)
-        'only_init': True,
-        
-        # 'init_method': 'bare',
-        'init_method': 'seeded',
+
+        'init_method': 'bare',
+        # 'init_method': 'seeded',
         'n_pixels_per_process': 128,
         'normalize_init': False,
         'update_freq': 200,
@@ -84,7 +81,7 @@ def run_onacid_from_file(cnm):
     cnm.fit_from_scope(
         out_file_name=os.path.join(root, 'data/out/sample/sample'),
         input_avi_path=os.path.join(root, 'data/raw/LIS68HC/1msCam1HC.avi'),
-        seed_file=os.path.join(root, 'data/interim/LIS68HC/seed.mat'),
+        # seed_file=os.path.join(root, 'data/interim/LIS68HC/seed.mat'),
     )
 
 def run_onacid_from_scope(cnm):

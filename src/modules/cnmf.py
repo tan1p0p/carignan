@@ -13,11 +13,13 @@ from caiman.motion_correction import high_pass_filter_space, motion_correct_iter
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
 from cnmfereview.utils import crop_footprint, process_traces
 from joblib import load
-from scipy.sparse import csc_matrix
+from scipy.sparse import csc_matrix, coo_matrix
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
+import torch
 
 from modules.laser_handler import select_port, show_connection, shoot_laser
+from modules.nn.model import get_model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
@@ -60,8 +62,16 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
     def __init_models(self):
         self.model_dir = './models'
-        # self.askl_model = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
+        self.askl_model = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
         self.tpot_model = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
+        self.deep_model = model = Model(
+            s_stage='ResNet',
+            res_block_num=5,
+            t_hidden_dim=500,
+            t_output_dim=500
+        )
+        self.deep_model.load_state_dict(
+            torch.load(os.path.join(self.model_dir, 'deep_model.pth')))
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -308,7 +318,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 (self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f,
                  self.estimates.YrA) = tmp
             self.__init_models()
-            self.__reject_fp_comps()
+            self.__reject_fp_comps(Y.shape[1:])
 
             self.estimates.S = np.zeros_like(self.estimates.C)
             nr = self.estimates.C.shape[0]
@@ -454,34 +464,44 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             frame_cor = frame_cor/self.img_norm
         self.fit_next(t, frame_cor.reshape(-1, order='F'))
 
-    def __reject_fp_comps(self):
+    def __reject_fp_comps(self, dims):
         trace_len = 500
         if self.estimates.C.shape[1] < trace_len:
             return False
 
-        spatial = np.asarray(self.estimates.A[:, self.checked_comps:])
-        spatial = spatial.reshape(self.estimates.dims + (-1,), order='F').transpose(2, 0, 1)
+        checked_A = self.estimates.A.toarray()[:, :self.checked_comps]
+        checked_C = self.estimates.C[:self.checked_comps]
+        checked_YrA = self.estimates.YrA[:self.checked_comps]
+
+        unchecked_A = self.estimates.A.toarray()[:, self.checked_comps:]
+        unchecked_C = self.estimates.C[self.checked_comps:]
+        unchecked_YrA = self.estimates.YrA[self.checked_comps:]
+
+        spatial = unchecked_A.reshape(dims + (-1,), order='F').transpose(2, 0, 1)
         spatial = crop_footprint(spatial, 80)
         spatial = spatial.reshape((spatial.shape[0], -1))
-        trace = process_traces(self.estimates.C[self.checked_comps:], trace_len)
+        trace = process_traces(unchecked_C, trace_len)
         combined = np.concatenate((spatial, trace), axis=1)
-        breakpoint()
 
-        model = 'tpot'
+        model = 'deep'
         if model == 'askl':
             pred = self.askl_model.predict(combined)
         elif model == 'tpot':
             pred = self.tpot_model.predict(combined)
         elif model == 'deep':
-            pred = self.deep_model.predict(combined)
+            pred = self.deep_model.predict(torch.from_numpy(combined))[1]
         else:
             raise ValueError('Unsupported model!!')
 
-        pred < 0.5
-        breakpoint()
+        thred = 0.5
+        unchecked_A = unchecked_A[:, pred >= thred]
+        unchecked_C = unchecked_C[pred >= thred]
+        unchecked_YrA = unchecked_YrA[pred >= thred]
 
-        pass # reject fp comps
-        self.checked_comps += 100 # update checked_comps
+        self.estimates.A = coo_matrix(np.concatenate([checked_A, unchecked_A], axis=1))
+        self.estimates.C = np.concatenate([checked_C, unchecked_C], axis=0)
+        self.estimates.YrA = np.concatenate([checked_YrA, unchecked_YrA], axis=0)
+        self.checked_comps = self.estimates.C.shape[0] # update checked_comps
 
     def __shoot_laser(self):
         shoot_laser(self.ser, self.serial_power, self.serial_seconds)
