@@ -33,16 +33,15 @@ def prepare_onacid():
         'bas_nonneg': False, 
         'center_psf': True,
         'max_shifts_online': 20,
-        'init_batch': 500,                          # number of frames for initialization (presumably from the first file)
+        'init_batch': 100,                          # number of frames for initialization (presumably from the first file)
 
-        'init_method': 'bare',
-        # 'init_method': 'seeded',
+        # 'init_method': 'bare',
+        'init_method': 'seeded',
         'n_pixels_per_process': 128,
         'normalize_init': False,
         'update_freq': 200,
         'expected_comps': 500,                       # maximum number of expected components used for memory pre-allocation (exaggerate here)
         'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
-        # 'sniper_mode': True,
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
         'min_num_trial': 5,                          # number of candidate components per frame
         # 'min_num_trial': 0,
@@ -50,7 +49,6 @@ def prepare_onacid():
         'show_movie': False,                         # show the movie with the results as the data gets processed
         'motion_correct': True,
         'pw_rigid': False,                           # flag for performing piecewise-rigid motion correction (otherwise just rigid)
-        # 'full_XXt':True,
         
         'p': 1,                                      # order of AR indicator dynamics
         'center_psf': True,
@@ -63,14 +61,11 @@ def prepare_onacid():
         
         'K': None,
         
-        # for CNMF-E.
         # From https://caiman.readthedocs.io/en/master/CaImAn_Tips.html?highlight=CNMF-E#p-processing-tips
         'center_psf': True,
         'method_init': 'corr_pnr',
         'ring_size_factor': 1.5,
         'only_init_patch': True,
-        
-        # 'simultaneously': True
     }
 
     opts = params.CNMFParams(params_dict=params_dict)
@@ -80,8 +75,9 @@ def prepare_onacid():
 def run_onacid_from_file(cnm):
     cnm.fit_from_scope(
         out_file_name=os.path.join(root, 'data/out/sample/sample'),
-        input_avi_path=os.path.join(root, 'data/raw/LIS68HC/1msCam1HC.avi'),
-        # seed_file=os.path.join(root, 'data/interim/LIS68HC/seed.mat'),
+        input_avi_path=os.path.join(root, 'data/raw/DM108/DM108.avi'),
+        seed_file=os.path.join(root, 'data/raw/DM108/DM108.mat'),
+        sync_pattern_file=os.path.join(root, 'data/interim/DM108/DM108_sync-0.mat')
     )
 
 def run_onacid_from_scope(cnm):

@@ -19,7 +19,6 @@ from sklearn.preprocessing import normalize
 import torch
 
 from modules.laser_handler import select_port, show_connection, shoot_laser
-from modules.nn.model import get_model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
@@ -57,8 +56,12 @@ class MiniscopeOnACID(online_cnmf.OnACID):
     def __init_serial_status(self):
         self.serial_power = 60000
         self.serial_seconds = 0.5
-        self.ser = select_port()
-        show_connection(self.ser)
+        ser = select_port()
+        if ser == 'dummy':
+            self.ser = None
+        else:
+            self.ser = ser
+            show_connection(self.ser)
 
     def __init_models(self):
         self.model_dir = './models'
@@ -517,7 +520,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         if sync_pattern_file != None:
             with h5py.File(sync_pattern_file, 'r') as f:
-                self.sync_patterns = f['sync_pattern'][()]
+                self.sync_patterns = f['W'][()]
             self.__init_serial_status()
 
         # set some camera params
