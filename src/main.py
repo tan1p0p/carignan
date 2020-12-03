@@ -35,8 +35,8 @@ def prepare_onacid():
         'max_shifts_online': 20,
         'init_batch': 100,                          # number of frames for initialization (presumably from the first file)
 
-        # 'init_method': 'bare',
-        'init_method': 'seeded',
+        'init_method': 'bare',
+        # 'init_method': 'seeded',
         'n_pixels_per_process': 128,
         'normalize_init': False,
         'update_freq': 200,
@@ -44,7 +44,7 @@ def prepare_onacid():
         'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
         'min_num_trial': 5,                          # number of candidate components per frame
-        # 'min_num_trial': 0,
+        # 'min_num_trial': 0,                          # set 0 for seed mode
         'use_corr_img': True,                        # flag for using the corr*pnr image when searching for new neurons (otherwise residual)
         'show_movie': False,                         # show the movie with the results as the data gets processed
         'motion_correct': True,
@@ -75,9 +75,9 @@ def prepare_onacid():
 def run_onacid_from_file(cnm):
     cnm.fit_from_scope(
         out_file_name=os.path.join(root, 'data/out/sample/sample'),
-        input_avi_path=os.path.join(root, 'data/raw/DM108/DM108.avi'),
-        seed_file=os.path.join(root, 'data/raw/DM108/DM108.mat'),
-        sync_pattern_file=os.path.join(root, 'data/interim/DM108/DM108_sync-0.mat')
+        input_avi_path=os.path.join(root, 'data/raw/LIS68HC/1msCam1HC.avi'),
+        # seed_file=os.path.join(root, 'data/interim/DM108/DM108_A.mat'),
+        # sync_pattern_file=os.path.join(root, 'data/interim/DM108/DM108_sync-1.mat')
     )
 
 def run_onacid_from_scope(cnm):

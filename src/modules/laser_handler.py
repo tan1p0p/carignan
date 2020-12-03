@@ -1,6 +1,8 @@
 import multiprocessing
 import time
 
+import cv2
+import numpy as np
 import serial
 from serial.tools import list_ports
 
@@ -47,28 +49,32 @@ def show_connection(ser):
         ser.reset_output_buffer()
         time.sleep(0.5)
 
-def shoot_laser(ser, power, seconds):
-    def shoot():
-        ser.write(str(power).encode('utf-8'))
-        ser.write(b'\n')
-        ser.reset_output_buffer()
-        time.sleep(seconds)
+def shoot_laser(ser, power, seconds, is_shooting):
+    def shoot(is_shooting):
+        if is_shooting.value == 0:
+            is_shooting.value = 1
+            ser.write(str(power).encode('utf-8'))
+            ser.write(b'\n')
+            ser.reset_output_buffer()
+            time.sleep(seconds)
 
-        ser.write(str(0).encode('utf-8'))
-        ser.write(b'\n')
-        ser.reset_output_buffer()
+            ser.write(str(0).encode('utf-8'))
+            ser.write(b'\n')
+            ser.reset_output_buffer()
+            is_shooting.value = 0
 
-    def dummy():
-        icon = np.zeros(80, 80, 3)
-        icon = cv2.circle(icon, (40, 40), 16, (0, 255, 0), -1)
-        cv2.imshow('laser', icon)
-        time.sleep(seconds)
-        cv2.destroyWindow('laser')
+    def dummy(is_shooting):
+        if is_shooting.value == 0:
+            is_shooting.value = 1
+            print('laser on')
+            time.sleep(seconds)
+            print('laser off')
+            is_shooting.value = 0
 
-    if ser == None:
-        p = multiprocessing.Process(target=shoot)
+    if not ser is None:
+        p = multiprocessing.Process(target=shoot, args=(is_shooting,))
     else:
-        p = multiprocessing.Process(target=dummy)
+        p = multiprocessing.Process(target=dummy, args=(is_shooting,))
     p.start()
 
 

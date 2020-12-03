@@ -4,6 +4,7 @@ import multiprocessing
 import sys
 import time
 from math import sqrt
+from multiprocessing import Value
 
 import cv2
 import h5py
@@ -14,11 +15,13 @@ from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initializ
 from cnmfereview.utils import crop_footprint, process_traces
 from joblib import load
 from scipy.sparse import csc_matrix, coo_matrix
+from scipy.io import loadmat
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
 import torch
 
 from modules.laser_handler import select_port, show_connection, shoot_laser
+# from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, params=None, estimates=None, path=None, dview=None):
@@ -56,6 +59,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
     def __init_serial_status(self):
         self.serial_power = 60000
         self.serial_seconds = 0.5
+        self.is_shooting = Value('b', False)
         ser = select_port()
         if ser == 'dummy':
             self.ser = None
@@ -67,7 +71,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.model_dir = './models'
         self.askl_model = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
         self.tpot_model = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
-        self.deep_model = model = Model(
+        self.deep_model = Model(
             s_stage='ResNet',
             res_block_num=5,
             t_hidden_dim=500,
@@ -177,7 +181,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             cv2.createTrackbar(self.dr_min_text, self.window_name, 0, max_bright, lambda x:x)
             cv2.createTrackbar(self.dr_max_text, self.window_name, max_bright, max_bright, lambda x:x)
 
-    def __show_next_frame(self, text, mode, text_color=(255, 255, 255), avi_out=None):
+    def __show_next_frame(self, lines, mode, text_color=(255, 255, 255), avi_out=None):
         _, frame = self.cap.read()
 
         if mode == 'prepare':
@@ -208,7 +212,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if mode == 'analyze':
             frame = np.hstack([frame, self.plot])
 
-        cv2.putText(frame, text, (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color)
+        for i, line in enumerate(lines):
+            cv2.putText(frame, line, (5, (i+1)*20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color)
         cv2.imshow(self.window_name, frame)
         return out_frame
 
@@ -359,13 +364,17 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
             if self.seed_file is None:
                 raise ValueError('Please input analyzed mat file path as seed_file.')
+
             with h5py.File(self.seed_file, 'r') as f:
-                ds_factor = self.params.get('online', 'ds_factor')
-                Ain = f['A'][()].reshape((original_d1, original_d2, -1), order='F')
-                Ain = cv2.resize(Ain, (d2, d1))
-                Ain = Ain.reshape((-1, Ain.shape[-1]), order='F')
-                Ain_norm = (Ain - Ain.min(0)[None, :]) / (Ain.max(0) - Ain.min(0))
-                A_seed = Ain_norm > 0.5
+                Ain = f['A'][()]
+            try:
+                Ain = Ain.reshape((original_d1, original_d2, -1), order='F')
+            except:
+                raise ValueError('The shape of A does not match the video source!')
+            Ain = cv2.resize(Ain, (d2, d1))
+            Ain = Ain.reshape((-1, Ain.shape[-1]), order='F')
+            Ain_norm = (Ain - Ain.min(0)[None, :]) / (Ain.max(0) - Ain.min(0))
+            A_seed = Ain_norm > 0.5
 
             tmp = online_cnmf.seeded_initialization(
                 Y.transpose(1, 2, 0), A_seed, k=self.params.get('init', 'K'),
@@ -507,7 +516,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.checked_comps = self.estimates.C.shape[0] # update checked_comps
 
     def __shoot_laser(self):
-        shoot_laser(self.ser, self.serial_power, self.serial_seconds)
+        shoot_laser(self.ser, self.serial_power, self.serial_seconds, self.is_shooting)
 
     def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None,
                        seed_file=None, sync_pattern_file=None, **kargs):
@@ -544,7 +553,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             while time.time() - prev_time < time_d:
                 pass
             prev_time = time.time()
-            frame = self.__show_next_frame('prepareing...', mode='prepare')
+            frame = self.__show_next_frame(['prepareing...'], mode='prepare')
             if cv2.waitKey(1) & 0xFF == ord('q') or cv2.getTrackbarPos(self.start_text, self.window_name):
                 break
 
@@ -564,7 +573,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             while time.time() - prev_time < time_d:
                 pass
             prev_time = time.time()
-            frame = self.__show_next_frame('initialize', mode='initialize', avi_out=avi_out)
+            frame = self.__show_next_frame(['initialize'], mode='initialize', avi_out=avi_out)
             init_Y[i] = frame.copy()
             cv2.waitKey(1)
         self.time_frame += self.params.get('online', 'init_batch')
@@ -602,18 +611,18 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 p.start()
 
             comp_num = self.M - self.params.get('init', 'nb')
-            if self.is_shoot:
-                frame = self.__show_next_frame(f'FPS: {fps:.4f}, neurons: {comp_num}, SHOOT!!!', mode='analyze', avi_out=avi_out, text_color=(255, 0, 0))
+            lines = [f'FPS: {fps:.4f}', f'neurons: {comp_num}', f'{self.time_frame} frame']
+            if self.is_shooting.value == 1:
+                lines.append('now shooting')
+                frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out, text_color=(0, 0, 255))
             else:
-                frame = self.__show_next_frame(f'FPS: {fps:.4f}, neurons: {comp_num}', mode='analyze', avi_out=avi_out)
+                frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out)
 
             self.__fit_next_from_raw(frame, self.time_frame, model_LN=model_LN)
-            if self.sync_patterns:
-                latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, t-1:t].squeeze()
-                self.is_shoot = False
-                if np.any(np.all(self.sync_patterns < latest, axis=1)):
+            if not self.sync_patterns is None:
+                latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame]
+                if np.any(np.all(self.sync_patterns < latest, axis=0)):
                     self.__shoot_laser()
-                    self.is_shoot = True
 
             self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):
