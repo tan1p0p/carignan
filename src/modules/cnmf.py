@@ -21,6 +21,7 @@ from sklearn.preprocessing import normalize
 import torch
 
 from modules.laser_handler import select_port, show_connection, shoot_laser
+from modules.video_handler import CV2VideoHandler, H5VideoHandler
 # from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
@@ -31,7 +32,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.sync_patterns = None
         self.checked_comps = 0
 
-    def __init_window_status(self, frame_shape, max_bright):
+    def __init_window_status(self, frame_shape, video_bit='uint8'):
         self.window_name = 'microscope CNMF-E'
 
         # seekbar texts
@@ -53,8 +54,11 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.y0 = 0
         self.y1 = h
         self.dr_min = 0
-        self.dr_max = max_bright
-        self.is_shoot = False
+        if video_bit == 'uint8':
+            self.dr_max = 255
+        else:
+            self.dr_max = 1000
+            # self.dr_max = 65535
 
     def __init_serial_status(self):
         self.serial_power = 60000
@@ -95,11 +99,12 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         half_w, half_h = w//2, h//2
         even_w, even_h = half_w*2, half_h*2
 
-        bg = self.estimates.b0.reshape(self.estimates.dims, order='f').astype('uint8')
+        bg = self.estimates.b0.reshape(self.estimates.dims, order='f')
+        bg = self.__compress_to_uint8(bg)
         if bg.shape[:2] != (half_h, half_w):
             bg = cv2.resize(bg, (half_w, half_h), interpolation=cv2.INTER_AREA)
 
-        frame_cor = self.current_frame_cor.astype('uint8')
+        frame_cor = self.__compress_to_uint8(self.current_frame_cor)
         if frame_cor.shape[:2] != (half_h, half_w):
             frame_cor = cv2.resize(self.current_frame_cor, (half_w, half_h), interpolation=cv2.INTER_AREA)
 
@@ -162,7 +167,16 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f['S'].resize(self.estimates.S.shape)
             f['S'][()] = self.estimates.S
 
-    def __prepare_window(self, mode, frame_shape, max_bright):
+    def __compress_to_uint8(self, frame):
+        frame = frame.astype('float')
+        frame[frame < self.dr_min] = self.dr_min
+        frame[frame > self.dr_max] = self.dr_max
+        frame -= self.dr_min
+        frame *= 255 / (self.dr_max - self.dr_min)
+        frame = frame.astype('uint8')
+        return frame
+
+    def __prepare_window(self, mode, frame_shape, video_bit='uint8'):
         h, w = frame_shape
         cv2.destroyAllWindows()
         cv2.namedWindow(self.window_name)
@@ -176,10 +190,16 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             cv2.createTrackbar(self.start_text, self.window_name, 0, 1, lambda x: True if x == 0 else False)
         elif mode == 'analyze':
             cv2.createTrackbar(self.demixed_bias_text, self.window_name, 1, 10, lambda x:x)
-        
+
         if mode != 'initialize':
-            cv2.createTrackbar(self.dr_min_text, self.window_name, 0, max_bright, lambda x:x)
-            cv2.createTrackbar(self.dr_max_text, self.window_name, max_bright, max_bright, lambda x:x)
+            if video_bit == 'uint8':
+                cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 255, lambda x:x)
+                cv2.createTrackbar(self.dr_max_text, self.window_name, 255, 255, lambda x:x)
+            else:
+                cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 1000, lambda x:x)
+                cv2.createTrackbar(self.dr_max_text, self.window_name, 1000, 1000, lambda x:x)
+                # cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 65535, lambda x:x)
+                # cv2.createTrackbar(self.dr_max_text, self.window_name, 65535, 65535, lambda x:x)
 
     def __show_next_frame(self, lines, mode, text_color=(255, 255, 255), avi_out=None):
         _, frame = self.cap.read()
@@ -194,27 +214,24 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         elif mode == 'analyze':
             self.demixed_bias = cv2.getTrackbarPos(self.demixed_bias_text, self.window_name)
 
-        frame = frame[self.y0:self.y1, self.x0:self.x1]
-        if avi_out != None:
-            avi_out.write(frame)
-        out_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        out_frame = frame[self.y0:self.y1, self.x0:self.x1]
+        if avi_out != None and self.cap.video_bit == 'uint8':
+            avi_out.write(out_frame)
+        v_frame = out_frame
 
         if mode != 'initialize':
             self.dr_min = cv2.getTrackbarPos(self.dr_min_text, self.window_name)
             self.dr_max = cv2.getTrackbarPos(self.dr_max_text, self.window_name)
-            frame = frame.astype('float')
-            frame[frame < self.dr_min] = self.dr_min
-            frame[frame > self.dr_max] = self.dr_max
-            frame -= self.dr_min
-            frame *= 255 / (self.dr_max - self.dr_min)
-            frame = frame.astype('uint8')
+        v_frame = self.__compress_to_uint8(v_frame)
 
         if mode == 'analyze':
-            frame = np.hstack([frame, self.plot])
+            v_frame = np.dstack([v_frame, v_frame, v_frame])
+            v_frame = np.hstack([v_frame, self.plot])
 
         for i, line in enumerate(lines):
-            cv2.putText(frame, line, (5, (i+1)*20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color)
-        cv2.imshow(self.window_name, frame)
+            cv2.putText(v_frame, line, (5, (i+1)*20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color)
+        cv2.imshow(self.window_name, v_frame)
+
         return out_frame
 
     # TODO: need to refactor
@@ -259,7 +276,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         return model_LN
 
     # TODO: need to refactor
-    def __initialize_online(self, model_LN, Y):
+    def __initialize_online(self, model_LN, Y, false_positive_detection_model=None):
         _, original_d1, original_d2 = Y.shape
         opts = self.params.get_group('online')
         init_batch = opts['init_batch']
@@ -517,7 +534,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
     def __shoot_laser(self):
         shoot_laser(self.ser, self.serial_power, self.serial_seconds, self.is_shooting)
 
-    def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None,
+    def fit_from_scope(self, out_file_name, input_camera_id=0, input_video_path=None, mov_key='Object',
                        seed_file=None, sync_pattern_file=None, false_positive_detection_model=None, **kargs):
         self.seed_file = seed_file
         self.out_mat_file = out_file_name + '.mat'
@@ -535,19 +552,24 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.is_sync_mode = True
 
         # set some camera params
-        if input_avi_path is None:
-            self.cap = cv2.VideoCapture(input_camera_id)
+        if input_video_path is None:
+            self.cap = CV2VideoHandler(input_camera_id)
         else:
-            self.cap = cv2.VideoCapture(input_avi_path)
+            _, ext = os.path.splitext(input_video_path)
+            if ext == '.avi':
+                self.cap = CV2VideoHandler(input_video_path)
+            elif ext in ['.h5', '.hdf5', '.mat']:
+                self.cap = H5VideoHandler(input_video_path, mov_key=mov_key)
+            else:
+                raise ValueError
 
         model_LN = self.__get_model_LN()
         ret, frame = self.cap.read()
         if not ret:
             raise Exception('frame cannot read.')
-        max_h, max_w, _ = frame.shape
-        max_bright = max(255, frame.max())
-        self.__init_window_status((max_h, max_w), max_bright)
-        self.__prepare_window(mode='prepare', frame_shape=(max_h, max_w), max_bright=max_bright)
+        max_h, max_w = frame.shape
+        self.__init_window_status((max_h, max_w), video_bit=self.cap.video_bit)
+        self.__prepare_window(mode='prepare', frame_shape=(max_h, max_w), video_bit=self.cap.video_bit)
 
         prev_time = time.time()
         while True:
@@ -560,10 +582,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 break
 
         h, w = frame.shape
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        avi_out = cv2.VideoWriter(self.out_avi_file, fourcc, 10.0, (w, h))
+        avi_out = cv2.VideoWriter(self.out_avi_file, cv2.VideoWriter_fourcc(*'XVID'), 10.0, (w, h))
 
-        self.__prepare_window(mode='initialize', frame_shape=(h, w), max_bright=max_bright)
+        self.__prepare_window(mode='initialize', frame_shape=(h, w), video_bit=self.cap.video_bit)
         init_Y = np.empty((self.params.get('online', 'init_batch'),) + frame.shape)
 
         with h5py.File(self.out_mat_file, 'w') as f:
@@ -583,9 +604,11 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         with h5py.File(self.out_mat_file, 'a') as f:
             f['initialize_last_frame_t'] = time.time()
 
-        Y_init = caiman.base.movies.movie(init_Y.astype(np.float32))
-        self.__initialize_online(model_LN=model_LN, Y=Y_init)
-        self.__prepare_window(mode='analyze', frame_shape=(h, w), max_bright=max_bright)
+        self.__initialize_online(
+            model_LN=model_LN,
+            Y=caiman.base.movies.movie(init_Y.astype(np.float32)),
+            false_positive_detection_model=false_positive_detection_model)
+        self.__prepare_window(mode='analyze', frame_shape=(h, w), video_bit=self.cap.video_bit)
 
         with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_first_frame_t'] = time.time()
