@@ -76,6 +76,8 @@ def run_onacid_from_file(cnm):
     cnm.fit_from_scope(
         out_file_name=os.path.join(root, 'data/out/sample/sample'),
         input_avi_path=os.path.join(root, 'data/raw/LIS68HC/1msCam1HC.avi'),
+        # input_avi_path=os.path.join(root, 'data/raw/DM108/DM108.avi'),
+        # input_avi_path=os.path.join(root, 'data/interim/DM108/DM108_comp-1.avi'),
         # seed_file=os.path.join(root, 'data/interim/DM108/DM108_A.mat'),
         # sync_pattern_file=os.path.join(root, 'data/interim/DM108/DM108_sync-1.mat')
     )

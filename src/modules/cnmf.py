@@ -325,7 +325,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             else:
                 (self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f,
                  self.estimates.YrA) = tmp
-            self.__init_models()
+            if false_positive_detection_model is not None:
+                self.__init_models()
             self.__reject_fp_comps(Y.shape[1:])
 
             self.estimates.S = np.zeros_like(self.estimates.C)
@@ -495,15 +496,13 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         trace = process_traces(unchecked_C, trace_len)
         combined = np.concatenate((spatial, trace), axis=1)
 
-        model = 'deep'
+        model = None
         if model == 'askl':
             pred = self.askl_model.predict(combined)
         elif model == 'tpot':
             pred = self.tpot_model.predict(combined)
         elif model == 'deep':
             pred = self.deep_model.predict(torch.from_numpy(combined))[1]
-        else:
-            raise ValueError('Unsupported model!!')
 
         thred = 0.5
         unchecked_A = unchecked_A[:, pred >= thred]
@@ -519,18 +518,21 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         shoot_laser(self.ser, self.serial_power, self.serial_seconds, self.is_shooting)
 
     def fit_from_scope(self, out_file_name, input_camera_id=0, input_avi_path=None,
-                       seed_file=None, sync_pattern_file=None, **kargs):
+                       seed_file=None, sync_pattern_file=None, false_positive_detection_model=None, **kargs):
         self.seed_file = seed_file
         self.out_mat_file = out_file_name + '.mat'
         self.out_avi_file = out_file_name + '.avi'
+
         dir_path = os.path.dirname(out_file_name)
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
 
+        self.is_sync_mode = False
         if sync_pattern_file != None:
             with h5py.File(sync_pattern_file, 'r') as f:
                 self.sync_patterns = f['W'][()]
             self.__init_serial_status()
+            self.is_sync_mode = True
 
         # set some camera params
         if input_avi_path is None:
@@ -612,7 +614,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
             comp_num = self.M - self.params.get('init', 'nb')
             lines = [f'FPS: {fps:.4f}', f'neurons: {comp_num}', f'{self.time_frame} frame']
-            if self.is_shooting.value == 1:
+            if self.is_sync_mode and self.is_shooting.value == 1:
                 lines.append('now shooting')
                 frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out, text_color=(0, 0, 255))
             else:

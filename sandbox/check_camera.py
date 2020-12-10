@@ -16,7 +16,7 @@ def check_camera_connection():
         cap = cv2.VideoCapture(camera_number)
         ret, frame = cap.read()
 
-        if ret is True:
+        if ret is True and frame is not None:
             true_camera_is.append(camera_number)
             print("camera_number", camera_number, "Find!")
 
@@ -24,6 +24,15 @@ def check_camera_connection():
             print("camera_number", camera_number, "None")
     print("接続されているカメラは", len(true_camera_is), "台です。")
 
+    print('select camera >> ', end='')
+    camera_id = int(input())
+    cap = cv2.VideoCapture(camera_id)
+    while True:
+        ret, frame = cap.read()
+        print(ret, frame.shape)
+        cv2.imshow('frame', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
 if __name__ == "__main__":
     check_camera_connection()
