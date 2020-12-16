@@ -35,16 +35,16 @@ def prepare_onacid():
         'max_shifts_online': 20,
         'init_batch': 100,                          # number of frames for initialization (presumably from the first file)
 
-        'init_method': 'bare',
-        # 'init_method': 'seeded',
+        # 'init_method': 'bare',
+        'init_method': 'seeded',
         'n_pixels_per_process': 128,
         'normalize_init': False,
         'update_freq': 200,
         'expected_comps': 500,                       # maximum number of expected components used for memory pre-allocation (exaggerate here)
         'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
-        'min_num_trial': 5,                          # number of candidate components per frame
-        # 'min_num_trial': 0,                          # set 0 for seed mode
+        # 'min_num_trial': 5,                          # number of candidate components per frame
+        'min_num_trial': 0,                          # set 0 for seed mode
         'use_corr_img': True,                        # flag for using the corr*pnr image when searching for new neurons (otherwise residual)
         'show_movie': False,                         # show the movie with the results as the data gets processed
         'motion_correct': True,
@@ -77,10 +77,9 @@ def run_onacid_from_file(cnm):
         out_file_name='data/out/sample/sample',
         input_video_path='data/interim/DM108/DM108_video.h5',
         # input_video_path='data/raw/LIS68HC/1msCam1HC.avi',
-        # input_video_path='data/raw/DM108/DM108.avi',
         # input_video_path='data/interim/DM108/DM108_comp-1.avi',
-        # seed_file='data/interim/DM108/DM108_A.mat',
-        # sync_pattern_file='data/interim/DM108/DM108_sync-1.mat'
+        seed_file='data/interim/DM108/DM108_A.mat',
+        sync_pattern_file='data/interim/DM108/DM108_sync-1.mat'
     )
 
 def run_onacid_from_scope(cnm):

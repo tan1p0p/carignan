@@ -22,6 +22,7 @@ import torch
 
 from modules.laser_handler import select_port, show_connection, shoot_laser
 from modules.video_handler import CV2VideoHandler, H5VideoHandler
+from modules.utils import zscore
 # from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
@@ -386,9 +387,14 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             with h5py.File(self.seed_file, 'r') as f:
                 Ain = f['A'][()]
             try:
-                Ain = Ain.reshape((original_d1, original_d2, -1), order='F')
+                Ain = Ain.reshape((original_d1, original_d2, -1))
             except:
                 raise ValueError('The shape of A does not match the video source!')
+            window_name = 'please check A_seed'
+            Ain_gray = Ain.sum(axis=2)
+            cv2.imshow(window_name, np.dstack([Ain_gray, Ain_gray, Ain_gray]))
+            cv2.waitKey(0)
+            cv2.destroyWindow(window_name)
             Ain = cv2.resize(Ain, (d2, d1))
             Ain = Ain.reshape((-1, Ain.shape[-1]), order='F')
             Ain_norm = (Ain - Ain.min(0)[None, :]) / (Ain.max(0) - Ain.min(0))
@@ -547,7 +553,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.is_sync_mode = False
         if sync_pattern_file != None:
             with h5py.File(sync_pattern_file, 'r') as f:
-                self.sync_patterns = f['W'][()]
+                self.sync_patterns = zscore(f['W'][()], axis=1)
             self.__init_serial_status()
             self.is_sync_mode = True
 
@@ -646,7 +652,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.__fit_next_from_raw(frame, self.time_frame, model_LN=model_LN)
             if not self.sync_patterns is None:
                 latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame]
-                if np.any(np.all(self.sync_patterns < latest, axis=0)):
+                if np.any(np.all(self.sync_patterns < zscore(latest), axis=0)):
                     self.__shoot_laser()
 
             self.time_frame += 1

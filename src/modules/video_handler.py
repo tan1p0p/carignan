@@ -1,3 +1,4 @@
+import cv2
 import h5py
 
 class H5VideoHandler():
@@ -17,7 +18,7 @@ class H5VideoHandler():
 
 class CV2VideoHandler():
     def __init__(self, id_or_path):
-        self.cap = cv2.VideoCapture(input_camera_id)
+        self.cap = cv2.VideoCapture(id_or_path)
         self.video_bit = 'uint8'
 
     def read(self):
