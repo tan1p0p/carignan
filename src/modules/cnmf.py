@@ -20,9 +20,9 @@ from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
 import torch
 
-from modules.laser_handler import select_port, show_connection, shoot_laser
+from modules.laser_handler import LaserHandler
 from modules.video_handler import CV2VideoHandler, H5VideoHandler
-from modules.utils import zscore
+from modules.utils import zscore, HeatMap
 # from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
@@ -32,6 +32,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.seed_file = None
         self.sync_patterns = None
         self.checked_comps = 0
+        self.laser = LaserHandler()
 
     def __init_window_status(self, frame_shape, video_bit='uint8'):
         self.window_name = 'microscope CNMF-E'
@@ -60,17 +61,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             self.dr_max = 1000
             # self.dr_max = 65535
-
-    def __init_serial_status(self):
-        self.serial_power = 60000
-        self.serial_seconds = 0.5
-        self.is_shooting = Value('b', False)
-        ser = select_port()
-        if ser == 'dummy':
-            self.ser = None
-        else:
-            self.ser = ser
-            show_connection(self.ser)
 
     def __init_models(self):
         self.model_dir = './models'
@@ -134,6 +124,11 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             if colored.shape[:2] != (half_h, half_w):
                 colored = cv2.resize(colored, (half_w, half_h), interpolation=cv2.INTER_AREA)
             plots_mapped[half_h:even_h, half_w:even_w] = colored
+
+        if self.sync_patterns is not None:
+            latest = zscore(self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame])
+            heatmap_tensor = self.heatmap.get_heatmap_in_plt(np.concatenate([latest, self.sync_patterns], axis=1))
+            plots_mapped = np.hstack([plots_mapped, heatmap_tensor])
 
         self.plot = plots_mapped
 
@@ -276,7 +271,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             model_LN = None
         return model_LN
 
-    # TODO: need to refactor
     def __initialize_online(self, model_LN, Y, false_positive_detection_model=None):
         _, original_d1, original_d2 = Y.shape
         opts = self.params.get_group('online')
@@ -537,9 +531,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.estimates.YrA = np.concatenate([checked_YrA, unchecked_YrA], axis=0)
         self.checked_comps = self.estimates.C.shape[0] # update checked_comps
 
-    def __shoot_laser(self):
-        shoot_laser(self.ser, self.serial_power, self.serial_seconds, self.is_shooting)
-
     def fit_from_scope(self, out_file_name, input_camera_id=0, input_video_path=None, mov_key='Object',
                        seed_file=None, sync_pattern_file=None, false_positive_detection_model=None, **kargs):
         self.seed_file = seed_file
@@ -553,8 +544,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.is_sync_mode = False
         if sync_pattern_file != None:
             with h5py.File(sync_pattern_file, 'r') as f:
-                self.sync_patterns = zscore(f['W'][()], axis=1)
-            self.__init_serial_status()
+                self.sync_patterns = zscore(f['W'][()], axis=0)
             self.is_sync_mode = True
 
         # set some camera params
@@ -588,6 +578,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 break
 
         h, w = frame.shape
+        self.heatmap = HeatMap(figsize=(500, h))
         avi_out = cv2.VideoWriter(self.out_avi_file, cv2.VideoWriter_fourcc(*'XVID'), 10.0, (w, h))
 
         self.__prepare_window(mode='initialize', frame_shape=(h, w), video_bit=self.cap.video_bit)
@@ -643,7 +634,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
             comp_num = self.M - self.params.get('init', 'nb')
             lines = [f'FPS: {fps:.4f}', f'neurons: {comp_num}', f'{self.time_frame} frame']
-            if self.is_sync_mode and self.is_shooting.value == 1:
+            if self.is_sync_mode and self.laser.is_shooting.value == 1:
                 lines.append('now shooting')
                 frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out, text_color=(0, 0, 255))
             else:
@@ -653,7 +644,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             if not self.sync_patterns is None:
                 latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame]
                 if np.any(np.all(self.sync_patterns < zscore(latest), axis=0)):
-                    self.__shoot_laser()
+                    self.laser.shoot_laser()
 
             self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -667,7 +658,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('W', data=self.estimates.W.toarray())
         avi_out.release()
         try:
-            self.ser.close()
+            self.laser.ser.close()
         except:
             pass
         return self

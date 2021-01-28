@@ -77,7 +77,6 @@ def run_onacid_from_file(cnm):
         out_file_name='data/out/sample/sample',
         input_video_path='data/interim/DM108/DM108_video.h5',
         # input_video_path='data/raw/LIS68HC/1msCam1HC.avi',
-        # input_video_path='data/interim/DM108/DM108_comp-1.avi',
         seed_file='data/interim/DM108/DM108_A.mat',
         sync_pattern_file='data/interim/DM108/DM108_sync-1.mat'
     )
