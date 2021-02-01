@@ -22,6 +22,6 @@ pip install auto-sklearn
 git clone git@github.com:jf-lab/cnmfe-reviewer.git
 cd cnmfe-reviewer
 pip install .
-mv data/ ../data/cnmfe-reviewer
+mv data/* ../data/cnmfe-reviewer/
 cd ../
 rm -rf cnmfe-reviewer/ 
