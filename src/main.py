@@ -7,9 +7,8 @@ from caiman.source_extraction.cnmf import params
 from modules.cnmf import MiniscopeOnACID
 from modules.utils import show_logs
 
-root = './'
 
-def prepare_onacid():
+def get_caiman_params():
     stride = 8                                      # overlap between patches (used only during initialization)
     ssub = 2                                        # spatial downsampling factor (during initialization)
     ds_factor = 1 * ssub                            # spatial downsampling factor (during online processing)
@@ -35,16 +34,14 @@ def prepare_onacid():
         'max_shifts_online': 20,
         'init_batch': 100,                          # number of frames for initialization (presumably from the first file)
 
-        # 'init_method': 'bare',
-        'init_method': 'seeded',
+        'init_method': 'bare',
         'n_pixels_per_process': 128,
         'normalize_init': False,
         'update_freq': 200,
         'expected_comps': 500,                       # maximum number of expected components used for memory pre-allocation (exaggerate here)
         'sniper_mode': False,                        # flag using a CNN to detect new neurons (o/w space correlation is used). set to False for 1p data
         'dist_shape_update' : False,                 # flag for updating shapes in a distributed way
-        # 'min_num_trial': 5,                          # number of candidate components per frame
-        'min_num_trial': 0,                          # set 0 for seed mode
+        'min_num_trial': 5,                          # number of candidate components per frame
         'use_corr_img': True,                        # flag for using the corr*pnr image when searching for new neurons (otherwise residual)
         'show_movie': False,                         # show the movie with the results as the data gets processed
         'motion_correct': True,
@@ -68,26 +65,25 @@ def prepare_onacid():
         'only_init_patch': True,
     }
 
-    opts = params.CNMFParams(params_dict=params_dict)
-    onacid = MiniscopeOnACID(params=opts)
-    return onacid
+    return params.CNMFParams(params_dict=params_dict)
 
-def run_onacid_from_file(cnm):
-    cnm.fit_from_scope(
-        out_file_name='data/out/sample/sample',
-        input_video_path='data/interim/DM108/DM108_video.h5',
-        # input_video_path='data/raw/LIS68HC/1msCam1HC.avi',
+def run_onacid_from_file(caiman_params):
+    onacid = MiniscopeOnACID(
         seed_file='data/interim/DM108/DM108_A.mat',
-        sync_pattern_file='data/interim/DM108/DM108_sync-1.mat'
+        sync_pattern_file='data/interim/DM108/DM108_sync-1.mat',
+        caiman_params=caiman_params)
+    onacid.fit_from_file(
+        input_video_path='data/interim/DM108/DM108_video.h5',
+        mov_key='Object',
+        output_dir='data/out/sample/',
     )
 
-def run_onacid_from_scope(cnm):
-    now = str(datetime.datetime.now())
-    out_dir = os.path.join(root, f'data/out/{now}/')
-    os.makedirs(out_dir)
-    cnm.fit_from_scope(
+def run_onacid_from_scope(caiman_params):
+    onacid = MiniscopeOnACID(
+        caiman_params=caiman_params)
+    onacid.fit_from_scope(
         input_camera_id=0,
-        out_file_name=out_dir + 'out',
+        output_dir=f'data/out/{datetime.datetime.now()}/',
     )
 
 if __name__ == "__main__":
@@ -95,8 +91,8 @@ if __name__ == "__main__":
         raise ValueError('please give me -s or -f option.')
 
     show_logs()
-    cnm = prepare_onacid()
+    caiman_params = get_caiman_params()
     if sys.argv[1] == '-s':
-        run_onacid_from_scope(cnm)
+        run_onacid_from_scope(caiman_params)
     else:
-        run_onacid_from_file(cnm)
+        run_onacid_from_file(caiman_params)

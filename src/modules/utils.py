@@ -1,6 +1,10 @@
 import logging
 
+import cv2
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
+matplotlib.use('Agg')
 
 def show_logs():
     logging.basicConfig(
@@ -17,7 +21,8 @@ def zscore(x, axis=None):
 class HeatMap():
     def __init__(self, figsize, use_plt=False):
         self.figsize = figsize
-        self.use_plt = use_plt
+
+        self.use_plt = use_plt # Using plt for heatmap takes too much time.
         if self.use_plt:
             fig = plt.figure(figsize=(figsize[0]/100, figsize[1]/100), dpi=100) # If dpi=1, a fontsize error will occur.
             self.ax = fig.add_subplot(1, 1, 1)
@@ -30,7 +35,6 @@ class HeatMap():
         d_max = np_tensor.max(axis=axis, keepdims=True)
         return (np_tensor - d_min) / (d_max - d_min)
 
-    # takes too much time
     def __get_heatmap_in_plt(self, data):
         self.ax.clear()
         self.ax.pcolor(data.T, cmap=plt.cm.Blues)

@@ -23,14 +23,38 @@ import torch
 from modules.laser_handler import LaserHandler
 from modules.video_handler import CV2VideoHandler, H5VideoHandler
 from modules.utils import zscore, HeatMap
-# from modules.nn.model import Model
+from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
-    def __init__(self, params=None, estimates=None, path=None, dview=None):
-        super().__init__(params=params, estimates=estimates, path=path, dview=dview)
+    def __init__(self, caiman_params,
+                 seed_file=None, sync_pattern_file=None, fp_detect_method=None,
+                 estimates=None, path=None, dview=None):
+        """
+        caiman_params (CMNFParamas object): Please see https://caiman.readthedocs.io/en/master/core_functions.html?highlight=params#caiman.source_extraction.cnmf.params.CNMFParams for the details.
+        seed_file (str, optional): Seed file path for seeded initialization.
+                                   'init_method' param in 'caiman_params' will automaticaly set to 'seeded'.
+        sync_pattern_file (str, optional): Sync pattern file path for real-time syncronized detection.
+                                           'min_num_trial' param in 'caiman_params' will automaticaly set to 0.
+        fp_detect_method (str, optional): Select from 'askl', 'tpot', or 'deep'.
+                                          Please see https://github.com/jf-lab/cnmfe-reviewer/ for the details.
+        estimates, path, dview (objects, optional): Params for online_cnmf.OnACID object.
+                                                    Please see https://caiman.readthedocs.io/en/master/core_functions.html?highlight=OnACID#online-cnmf-onacid for the details.
+        """
+
+        if seed_file is not None:
+            caiman_params.change_params({'init_method': 'seeded'})
+        if sync_pattern_file is not None:
+            caiman_params.change_params({'min_num_trial': 0})
+        super().__init__(params=caiman_params, estimates=estimates, path=path, dview=dview)
+
+        self.seed_file = seed_file
+        if sync_pattern_file is None:
+            self.sync_patterns = None
+        else:
+            with h5py.File(sync_pattern_file, 'r') as f:
+                self.sync_patterns = zscore(f['W'][()], axis=0)
+        self.fp_detect_method = fp_detect_method
         self.time_frame = 0
-        self.seed_file = None
-        self.sync_patterns = None
         self.checked_comps = 0
         self.laser = LaserHandler()
 
@@ -64,16 +88,21 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
     def __init_models(self):
         self.model_dir = './models'
-        self.askl_model = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
-        self.tpot_model = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
-        self.deep_model = Model(
-            s_stage='ResNet',
-            res_block_num=5,
-            t_hidden_dim=500,
-            t_output_dim=500
-        )
-        self.deep_model.load_state_dict(
-            torch.load(os.path.join(self.model_dir, 'deep_model.pth')))
+        if self.fp_detect_method == 'askl':
+            self.fp_detector = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
+        elif self.fp_detect_method == 'tpot':
+            self.fp_detector = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
+        elif self.fp_detect_method == 'deep':
+            self.fp_detector = Model(
+                s_stage='ResNet',
+                res_block_num=5,
+                t_hidden_dim=500,
+                t_output_dim=500
+            )
+            self.fp_detector.load_state_dict(
+                torch.load(os.path.join(self.model_dir, 'deep_model.pth')))
+        else:
+            self.fp_detector = None
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -127,7 +156,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         if self.sync_patterns is not None:
             latest = zscore(self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame])
-            heatmap_tensor = self.heatmap.get_heatmap_in_plt(np.concatenate([latest, self.sync_patterns], axis=1))
+            heatmap_tensor = self.heatmap.get_heatmap(np.concatenate([latest, self.sync_patterns], axis=1))
             plots_mapped = np.hstack([plots_mapped, heatmap_tensor])
 
         self.plot = plots_mapped
@@ -230,7 +259,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         return out_frame
 
-    # TODO: need to refactor
     def __get_model_LN(self):
         if self.params.get('online', 'ring_CNN'):
             logging.info('Using Ring CNN model')
@@ -271,7 +299,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             model_LN = None
         return model_LN
 
-    def __initialize_online(self, model_LN, Y, false_positive_detection_model=None):
+    def __initialize_online(self, model_LN, Y):
         _, original_d1, original_d2 = Y.shape
         opts = self.params.get_group('online')
         init_batch = opts['init_batch']
@@ -337,9 +365,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             else:
                 (self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f,
                  self.estimates.YrA) = tmp
-            if false_positive_detection_model is not None:
+            if self.fp_detect_method is not None:
                 self.__init_models()
-            self.__reject_fp_comps(Y.shape[1:])
+                self.__reject_fp_comps(Y.shape[1:])
 
             self.estimates.S = np.zeros_like(self.estimates.C)
             nr = self.estimates.C.shape[0]
@@ -422,7 +450,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self._prepare_object(Yr, T1)
         return self
 
-    def __fit_next_from_raw(self, frame, t, model_LN=None, out=None):
+    def __fit_next_frame(self, frame, t, model_LN=None, out=None):
         ssub_B = self.params.get('init', 'ssub_B') * self.params.get('init', 'ssub')
         d1, d2 = self.params.get('data', 'dims')
         max_shifts_online = self.params.get('online', 'max_shifts_online')
@@ -513,13 +541,10 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         trace = process_traces(unchecked_C, trace_len)
         combined = np.concatenate((spatial, trace), axis=1)
 
-        model = None
-        if model == 'askl':
-            pred = self.askl_model.predict(combined)
-        elif model == 'tpot':
-            pred = self.tpot_model.predict(combined)
-        elif model == 'deep':
-            pred = self.deep_model.predict(torch.from_numpy(combined))[1]
+        if self.fp_detect_method == 'deep':
+            pred = self.fp_detector.predict(torch.from_numpy(combined))[1]
+        elif self.fp_detector is not None:
+            pred = self.fp_detector.predict(combined)
 
         thred = 0.5
         unchecked_A = unchecked_A[:, pred >= thred]
@@ -531,33 +556,12 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         self.estimates.YrA = np.concatenate([checked_YrA, unchecked_YrA], axis=0)
         self.checked_comps = self.estimates.C.shape[0] # update checked_comps
 
-    def fit_from_scope(self, out_file_name, input_camera_id=0, input_video_path=None, mov_key='Object',
-                       seed_file=None, sync_pattern_file=None, false_positive_detection_model=None, **kargs):
-        self.seed_file = seed_file
-        self.out_mat_file = out_file_name + '.mat'
-        self.out_avi_file = out_file_name + '.avi'
-
-        dir_path = os.path.dirname(out_file_name)
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-
-        self.is_sync_mode = False
-        if sync_pattern_file != None:
-            with h5py.File(sync_pattern_file, 'r') as f:
-                self.sync_patterns = zscore(f['W'][()], axis=0)
-            self.is_sync_mode = True
-
-        # set some camera params
-        if input_video_path is None:
-            self.cap = CV2VideoHandler(input_camera_id)
-        else:
-            _, ext = os.path.splitext(input_video_path)
-            if ext == '.avi':
-                self.cap = CV2VideoHandler(input_video_path)
-            elif ext in ['.h5', '.hdf5', '.mat']:
-                self.cap = H5VideoHandler(input_video_path, mov_key=mov_key)
-            else:
-                raise ValueError
+    def __fit(self, cap, output_dir='data/out/sample/'):
+        self.cap = cap
+        self.out_mat_file = os.path.join(output_dir, 'neurons.mat')
+        self.out_avi_file = os.path.join(output_dir, 'rec.avi')
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
         model_LN = self.__get_model_LN()
         ret, frame = self.cap.read()
@@ -603,8 +607,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         self.__initialize_online(
             model_LN=model_LN,
-            Y=caiman.base.movies.movie(init_Y.astype(np.float32)),
-            false_positive_detection_model=false_positive_detection_model)
+            Y=caiman.base.movies.movie(init_Y.astype(np.float32)))
         self.__prepare_window(mode='analyze', frame_shape=(h, w), video_bit=self.cap.video_bit)
 
         with h5py.File(self.out_mat_file, 'a') as f:
@@ -621,7 +624,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             fps = 1 / (time.time() - prev_time)
             prev_time = time.time()
 
-            # try:
             self.__set_plot(self.time_frame, frame_shape=(h, w), with_demixed=True)
             if self.time_frame % 100 == 0:
                 self.__set_results(self.time_frame)
@@ -634,13 +636,13 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
             comp_num = self.M - self.params.get('init', 'nb')
             lines = [f'FPS: {fps:.4f}', f'neurons: {comp_num}', f'{self.time_frame} frame']
-            if self.is_sync_mode and self.laser.is_shooting.value == 1:
+            if self.sync_patterns is not None and self.laser.is_shooting.value == 1:
                 lines.append('now shooting')
                 frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out, text_color=(0, 0, 255))
             else:
                 frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out)
 
-            self.__fit_next_from_raw(frame, self.time_frame, model_LN=model_LN)
+            self.__fit_next_frame(frame, self.time_frame, model_LN=model_LN)
             if not self.sync_patterns is None:
                 latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame]
                 if np.any(np.all(self.sync_patterns < zscore(latest), axis=0)):
@@ -649,8 +651,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            # except:
-            #     print(sys.exc_info())
         
         with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
@@ -661,4 +661,21 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.laser.ser.close()
         except:
             pass
-        return self
+
+    def fit_from_scope(self, input_camera_id, output_dir=None):
+        self.__fit(
+            CV2VideoHandler(input_camera_id),
+            output_dir=output_dir)
+
+    def fit_from_file(self, input_video_path, mov_key=None, output_dir=None):
+        _, ext = os.path.splitext(input_video_path)
+        if ext == '.avi':
+            cap = CV2VideoHandler(input_video_path)
+        elif ext in ['.h5', '.hdf5', '.mat']:
+            if mov_key is not None:
+                cap = H5VideoHandler(input_video_path, mov_key=mov_key)
+            else:
+                raise ValueError('`mov_key` is needed if use .h5 or .mat video file.')
+        else:
+            raise ValueError('We only supports .avi, .h5, .hdf5, or .mat video file.')
+        self.__fit(cap, output_dir=output_dir)
