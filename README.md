@@ -1,7 +1,7 @@
 # online-calcium-imaging
 Real-time calucium imaging software based on [CaImAn](https://caiman.readthedocs.io/en/master/).
 - frame-by-frame OnACID with simple GUI
-    - works on both Windows and Mac
+    - works on Windows, Mac or Linux
     - false-positive neuron detector based on [CNMF-E Reviewer](https://github.com/jf-lab/cnmfe-reviewer)
         - Issue: automl model cannot use in Windows
 - real-time detection of synchronous firing of neurons
@@ -16,6 +16,9 @@ python -V # >> 3.7.0
 
 # Mac / Linux
 source setup.sh
+
+# Windows
+setup.ps1
 
 # Download data.zip from https://drive.google.com/file/d/1DZVDDY6LErDou6d9tBWW139qIyP7aYQm and unzip.
 # Download *.npy to data/cnmfe-reviewer/ from https://drive.google.com/drive/folders/1pGGwUzSI7Hm6gBrilP1SIm0C5bnX7MSO.
