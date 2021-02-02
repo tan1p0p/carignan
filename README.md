@@ -19,10 +19,9 @@ source setup.sh
 
 # Windows
 setup.ps1
-
-# Download data.zip from https://drive.google.com/file/d/1DZVDDY6LErDou6d9tBWW139qIyP7aYQm and unzip.
-# Download *.npy to data/cnmfe-reviewer/ from https://drive.google.com/drive/folders/1pGGwUzSI7Hm6gBrilP1SIm0C5bnX7MSO.
 ```
+- Download data.zip from [here](https://drive.google.com/file/d/1DZVDDY6LErDou6d9tBWW139qIyP7aYQm) and unzip.
+- Download .npy files to data/cnmfe-reviewer/ from [here](https://drive.google.com/drive/folders/1pGGwUzSI7Hm6gBrilP1SIm0C5bnX7MSO).
 
 **Optional:** Sample full video data is [here](https://drive.google.com/drive/folders/19JVMEmVVxG6AtkfQFEvBlNtHI4BpuHR0).
 
