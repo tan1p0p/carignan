@@ -11,13 +11,11 @@ backcall==0.2.0
 bleach==3.2.1
 bokeh==2.2.2
 cachetools==4.1.1
-caiman @ file:///Users/hassaku/Documents/research/online-calcium-imaging/CaImAn
 certifi==2020.6.20
 cffi==1.14.3
 chardet==3.0.4
 click==7.1.2
 cloudpickle==1.6.0
-cnmfereview @ file:///Users/hassaku/Documents/research/online-calcium-imaging/cnmfe-reviewer
 ConfigSpace==0.4.16
 coverage==5.3
 cycler==0.10.0
