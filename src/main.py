@@ -32,7 +32,7 @@ def get_caiman_params():
         'bas_nonneg': False, 
         'center_psf': True,
         'max_shifts_online': 20,
-        'init_batch': 100,                          # number of frames for initialization (presumably from the first file)
+        'init_batch': 500,                         # number of frames for initialization (presumably from the first file)
 
         'init_method': 'bare',
         'n_pixels_per_process': 128,
@@ -69,8 +69,9 @@ def get_caiman_params():
 
 def run_onacid_from_file(caiman_params):
     onacid = MiniscopeOnACID(
-        seed_file='data/interim/DM108/DM108_A.mat',
-        sync_pattern_file='data/interim/DM108/DM108_sync-1.mat',
+        # seed_file='data/interim/DM108/DM108_A.mat',
+        # sync_pattern_file='data/interim/DM108/DM108_sync-1.mat',
+        fp_detect_method='TPOT', # TPOT, CNN or ShufflenetV2
         caiman_params=caiman_params)
     onacid.fit_from_file(
         input_video_path='data/interim/DM108/DM108_video.h5',

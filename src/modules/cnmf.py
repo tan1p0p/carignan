@@ -12,18 +12,16 @@ import numpy as np
 import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
-from cnmfereview.utils import crop_footprint, process_traces
-from joblib import load
 from scipy.sparse import csc_matrix, coo_matrix
 from scipy.io import loadmat
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
 import torch
 
+from modules.fp_detector.model import FpDetector
 from modules.laser_handler import LaserHandler
 from modules.video_handler import CV2VideoHandler, H5VideoHandler
 from modules.utils import zscore, HeatMap
-from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, caiman_params,
@@ -53,10 +51,10 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             with h5py.File(sync_pattern_file, 'r') as f:
                 self.sync_patterns = zscore(f['W'][()], axis=0)
-        self.fp_detect_method = fp_detect_method
         self.time_frame = 0
         self.checked_comps = 0
         self.laser = LaserHandler()
+        self.fp_detector = FpDetector(fp_detect_method)
 
     def __init_window_status(self, frame_shape, video_bit='uint8'):
         self.window_name = 'microscope CNMF-E'
@@ -85,24 +83,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             self.dr_max = 1000
             # self.dr_max = 65535
-
-    def __init_models(self):
-        self.model_dir = './models'
-        if self.fp_detect_method == 'askl':
-            self.fp_detector = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
-        elif self.fp_detect_method == 'tpot':
-            self.fp_detector = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
-        elif self.fp_detect_method == 'deep':
-            self.fp_detector = Model(
-                s_stage='ResNet',
-                res_block_num=5,
-                t_hidden_dim=500,
-                t_output_dim=500
-            )
-            self.fp_detector.load_state_dict(
-                torch.load(os.path.join(self.model_dir, 'deep_model.pth')))
-        else:
-            self.fp_detector = None
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -365,8 +345,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             else:
                 (self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f,
                  self.estimates.YrA) = tmp
-            if self.fp_detect_method is not None:
-                self.__init_models()
+            if self.fp_detector.method is not None:
                 self.__reject_fp_comps(Y.shape[1:])
 
             self.estimates.S = np.zeros_like(self.estimates.C)
@@ -377,28 +356,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.estimates.c1 = np.zeros(nr)
             self.estimates.neurons_sn = np.std(self.estimates.YrA, axis=-1)
             self.estimates.lam = np.zeros(nr)
-        elif self.params.get('online', 'init_method') == 'cnmf':
-            n_processes = cpu_count() - 1 or 1
-            cnm = CNMF(n_processes=n_processes, params=self.params, dview=self.dview)
-            cnm.estimates.shifts = self.estimates.shifts
-            if self.params.get('patch', 'rf') is None:
-                cnm.dview = None
-                cnm.fit(np.array(Y))
-                self.estimates = cnm.estimates
-
-            else:
-                Y.save('init_file.hdf5')
-                f_new = mmapping.save_memmap(['init_file.hdf5'], base_name='Yr', order='C',
-                                             slices=[slice(0, opts['init_batch']), None, None])
-
-                Yrm, dims_, T_ = mmapping.load_memmap(f_new)
-                Y = np.reshape(Yrm.T, [T_] + list(dims_), order='F')
-                cnm.fit(Y)
-                self.estimates = cnm.estimates
-                if self.params.get('online', 'normalize'):
-                    self.estimates.A /= self.img_norm.reshape(-1, order='F')[:, np.newaxis]
-                    self.estimates.b /= self.img_norm.reshape(-1, order='F')[:, np.newaxis]
-                    self.estimates.A = csc_matrix(self.estimates.A)
         elif self.params.get('online', 'init_method') == 'seeded':
             init = self.params.get_group('init').copy()
             is1p = (init['method_init'] == 'corr_pnr' and init['ring_size_factor'] is not None)
@@ -522,10 +479,15 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             frame_cor = frame_cor/self.img_norm
         self.fit_next(t, frame_cor.reshape(-1, order='F'))
 
+        if self.fp_detector.method is not None:
+            self.__reject_fp_comps((d1, d2))
+
     def __reject_fp_comps(self, dims):
-        trace_len = 500
-        if self.estimates.C.shape[1] < trace_len:
+        if self.estimates.C.shape[1] < 500:
             return False
+        if self.estimates.A.shape[1] == self.checked_comps:
+            return False
+        logging.info('fp detector effected')
 
         checked_A = self.estimates.A.toarray()[:, :self.checked_comps]
         checked_C = self.estimates.C[:self.checked_comps]
@@ -535,17 +497,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         unchecked_C = self.estimates.C[self.checked_comps:]
         unchecked_YrA = self.estimates.YrA[self.checked_comps:]
 
-        spatial = unchecked_A.reshape(dims + (-1,), order='F').transpose(2, 0, 1)
-        spatial = crop_footprint(spatial, 80)
-        spatial = spatial.reshape((spatial.shape[0], -1))
-        trace = process_traces(unchecked_C, trace_len)
-        combined = np.concatenate((spatial, trace), axis=1)
-
-        if self.fp_detect_method == 'deep':
-            pred = self.fp_detector.predict(torch.from_numpy(combined))[1]
-        elif self.fp_detector is not None:
-            pred = self.fp_detector.predict(combined)
-
+        reshaped_unchecked_A = unchecked_A.reshape(dims + (-1,), order='F').transpose(2, 0, 1)
+        pred = self.fp_detector.predict(reshaped_unchecked_A, unchecked_C)
         thred = 0.5
         unchecked_A = unchecked_A[:, pred >= thred]
         unchecked_C = unchecked_C[pred >= thred]
@@ -617,7 +570,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('C', (self.N, 100), maxshape=(None, None))
             f.create_dataset('S', (self.N, 100), maxshape=(None, None))
 
-        prev_time = time.time()
+        online_start_frame = self.time_frame
+        online_start_time = prev_time = time.time()
         while True:
             while time.time() - prev_time < time_d:
                 pass
@@ -651,7 +605,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-        
+
+        print('Overall FPS:', (self.time_frame - online_start_frame) / (time.time() - online_start_time))
+
         with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
             f.create_dataset('b0', data=self.estimates.b0)
