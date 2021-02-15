@@ -20,7 +20,7 @@ import torch
 
 from modules.fp_detector.model import FpDetector
 from modules.laser_handler import LaserHandler
-from modules.video_handler import CV2VideoHandler, H5VideoHandler
+from modules.video_handler import CV2VideoHandler, H5VideoHandler, TIFFVideoHandler
 from modules.utils import zscore, HeatMap
 
 class MiniscopeOnACID(online_cnmf.OnACID):
@@ -81,7 +81,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if video_bit == 'uint8':
             self.dr_max = 255
         else:
-            self.dr_max = 1000
+            self.dr_max = 10000
             # self.dr_max = 65535
 
     def __set_gain(self, x):
@@ -632,6 +632,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 cap = H5VideoHandler(input_video_path, mov_key=mov_key)
             else:
                 raise ValueError('`mov_key` is needed if use .h5 or .mat video file.')
+        elif input_video_path[-1] == '/':
+            cap = TIFFVideoHandler(input_video_path)
         else:
             raise ValueError('We only supports .avi, .h5, .hdf5, or .mat video file.')
         self.__fit(cap, output_dir=output_dir)

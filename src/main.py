@@ -74,8 +74,9 @@ def run_onacid_from_file(caiman_params):
         fp_detect_method='TPOT', # TPOT, CNN or ShufflenetV2
         caiman_params=caiman_params)
     onacid.fit_from_file(
-        input_video_path='data/interim/DM108/DM108_video.h5',
-        mov_key='Object',
+        input_video_path='data/raw/neurofinder/neurofinder.00.01/images/',
+        # input_video_path='data/interim/DM108/DM108_video.h5',
+        # mov_key='Object',
         output_dir='data/out/sample/',
     )
 
