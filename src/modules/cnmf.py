@@ -1,10 +1,8 @@
 import logging
-import os
 import multiprocessing
+import os
 import sys
 import time
-from math import sqrt
-from multiprocessing import Value
 
 import cv2
 import h5py
@@ -13,10 +11,6 @@ import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
 from scipy.sparse import csc_matrix, coo_matrix
-from scipy.io import loadmat
-from sklearn.decomposition import NMF
-from sklearn.preprocessing import normalize
-import torch
 
 from modules.fp_detector.model import FpDetector
 from modules.laser_handler import LaserHandler
