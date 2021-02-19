@@ -68,16 +68,20 @@ def get_caiman_params():
     return params.CNMFParams(params_dict=params_dict)
 
 def run_onacid_from_file(caiman_params):
+    method = 'CNN' # TPOT, CNN or ShufflenetV2
     onacid = MiniscopeOnACID(
         # seed_file='data/interim/DM108/DM108_A.mat',
         # sync_pattern_file='data/interim/DM108/DM108_sync-1.mat',
-        fp_detect_method='TPOT', # TPOT, CNN or ShufflenetV2
+        fp_detect_method=method,
         caiman_params=caiman_params)
     onacid.fit_from_file(
-        input_video_path='data/raw/neurofinder/neurofinder.00.01/images/',
+        input_video_path='data/raw/neurofinder/neurofinder.01.00/images/',
+        # input_video_path='data/raw/LIS68HC/1msCam1HC.avi',
+        # input_video_path='data/raw/LIS68HC/1msCam1HC_small.avi',
         # input_video_path='data/interim/DM108/DM108_video.h5',
-        # mov_key='Object',
-        output_dir='data/out/sample/',
+        mov_key='Object',
+        output_dir=f'data/out/neurofinder.01.00/{method}/',
+        with_plot=True
     )
 
 def run_onacid_from_scope(caiman_params):

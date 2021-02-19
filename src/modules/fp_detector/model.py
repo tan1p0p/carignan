@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torchvision import transforms
 import joblib
 from cnmfereview.utils import crop_footprint, process_traces
 
@@ -44,9 +45,24 @@ class DeepModel(nn.Module):
             nn.Sigmoid()
         )
 
+    def norm(self, x, dim=None):
+        min_v, _ = x.min(dim=dim, keepdims=True)
+        max_v, _ = x.max(dim=dim, keepdims=True)
+    
+        # to avoid zero division
+        zero_idx = max_v == min_v
+        max_v[zero_idx] = 1
+        min_v[zero_idx] = 0
+    
+        result = (x - min_v) / (max_v - min_v)
+        return result
+
     def forward(self, inputs):
         t, s = inputs
+        t = self.norm(t, 2)
         t = self.temporal_stage(t)
+        s_shape = s.shape
+        s = self.norm(s.reshape(-1, 1, 80 * 80), 2).reshape(s_shape)
         s = torch.flatten(self.spatial_stage(s), 1)
         return self.out(torch.cat((s, t), 1))
 
@@ -76,9 +92,9 @@ class FpDetector():
         if self.method == 'TPOT':
             spatial = spatial.reshape((spatial.shape[0], -1))
             combined = np.concatenate((spatial, trace), axis=1)
-            return self.model.predict(combined)
+            return self.model.predict(combined), 0.5
         else:
             trace = trace.reshape(-1, 1, 500)
             spatial = spatial.reshape(-1, 1, 80, 80)
             pred = self.model((torch.from_numpy(trace).float(), torch.from_numpy(spatial).float()))
-            return pred[:, 0]
+            return pred[:, 0], 0.2
