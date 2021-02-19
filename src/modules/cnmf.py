@@ -12,18 +12,16 @@ import numpy as np
 import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
-from cnmfereview.utils import crop_footprint, process_traces
-from joblib import load
 from scipy.sparse import csc_matrix, coo_matrix
 from scipy.io import loadmat
 from sklearn.decomposition import NMF
 from sklearn.preprocessing import normalize
 import torch
 
+from modules.fp_detector.model import FpDetector
 from modules.laser_handler import LaserHandler
-from modules.video_handler import CV2VideoHandler, H5VideoHandler
+from modules.video_handler import CV2VideoHandler, H5VideoHandler, TIFFVideoHandler
 from modules.utils import zscore, HeatMap
-from modules.nn.model import Model
 
 class MiniscopeOnACID(online_cnmf.OnACID):
     def __init__(self, caiman_params,
@@ -53,10 +51,10 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         else:
             with h5py.File(sync_pattern_file, 'r') as f:
                 self.sync_patterns = zscore(f['W'][()], axis=0)
-        self.fp_detect_method = fp_detect_method
+            self.laser = LaserHandler()
         self.time_frame = 0
         self.checked_comps = 0
-        self.laser = LaserHandler()
+        self.fp_detector = FpDetector(fp_detect_method)
 
     def __init_window_status(self, frame_shape, video_bit='uint8'):
         self.window_name = 'microscope CNMF-E'
@@ -83,26 +81,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         if video_bit == 'uint8':
             self.dr_max = 255
         else:
-            self.dr_max = 1000
+            self.dr_max = 65535
             # self.dr_max = 65535
-
-    def __init_models(self):
-        self.model_dir = './models'
-        if self.fp_detect_method == 'askl':
-            self.fp_detector = load(os.path.join(self.model_dir, 'cr_tutorial_askl.joblib'))
-        elif self.fp_detect_method == 'tpot':
-            self.fp_detector = load(os.path.join(self.model_dir, 'cr_tutorial_tpot.joblib'))
-        elif self.fp_detect_method == 'deep':
-            self.fp_detector = Model(
-                s_stage='ResNet',
-                res_block_num=5,
-                t_hidden_dim=500,
-                t_output_dim=500
-            )
-            self.fp_detector.load_state_dict(
-                torch.load(os.path.join(self.model_dir, 'deep_model.pth')))
-        else:
-            self.fp_detector = None
 
     def __set_gain(self, x):
         gain = [16, 32, 64]
@@ -135,8 +115,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         plots[:half_h, :half_w] = frame_cor
         plots[:half_h, half_w:even_w] = bg
         plots[half_h:even_h, :half_w] = diff
-        plots_mapped = cv2.applyColorMap(plots, cv2.COLORMAP_VIRIDIS)
-        plots_mapped[half_h:, half_w:] = 0
+        plots = cv2.applyColorMap(plots, cv2.COLORMAP_VIRIDIS)
+        plots[half_h:, half_w:] = 0
 
         if with_demixed:
             A_f = self.estimates.Ab[:, self.params.get('init', 'nb'):] # (size, N)
@@ -152,14 +132,14 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                         colored[:, :, j] += tmp
             if colored.shape[:2] != (half_h, half_w):
                 colored = cv2.resize(colored, (half_w, half_h), interpolation=cv2.INTER_AREA)
-            plots_mapped[half_h:even_h, half_w:even_w] = colored
+            plots[half_h:even_h, half_w:even_w] = colored
 
         if self.sync_patterns is not None:
             latest = zscore(self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame])
             heatmap_tensor = self.heatmap.get_heatmap(np.concatenate([latest, self.sync_patterns], axis=1))
-            plots_mapped = np.hstack([plots_mapped, heatmap_tensor])
+            plots = np.hstack([plots, heatmap_tensor])
 
-        self.plot = plots_mapped
+        self.plot = plots
 
     def __set_results(self, t):
         epochs = self.params.get('online', 'epochs')
@@ -221,8 +201,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 255, lambda x:x)
                 cv2.createTrackbar(self.dr_max_text, self.window_name, 255, 255, lambda x:x)
             else:
-                cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 1000, lambda x:x)
-                cv2.createTrackbar(self.dr_max_text, self.window_name, 1000, 1000, lambda x:x)
+                cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 65535, lambda x:x)
+                cv2.createTrackbar(self.dr_max_text, self.window_name, 65535, 65535, lambda x:x)
                 # cv2.createTrackbar(self.dr_min_text, self.window_name, 0, 65535, lambda x:x)
                 # cv2.createTrackbar(self.dr_max_text, self.window_name, 65535, 65535, lambda x:x)
 
@@ -251,7 +231,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
 
         if mode == 'analyze':
             v_frame = np.dstack([v_frame, v_frame, v_frame])
-            v_frame = np.hstack([v_frame, self.plot])
+            if self.with_plot:
+                v_frame = np.hstack([v_frame, self.plot])
 
         for i, line in enumerate(lines):
             cv2.putText(v_frame, line, (5, (i+1)*20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color)
@@ -365,9 +346,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             else:
                 (self.estimates.A, self.estimates.b, self.estimates.C, self.estimates.f,
                  self.estimates.YrA) = tmp
-            if self.fp_detect_method is not None:
-                self.__init_models()
-                self.__reject_fp_comps(Y.shape[1:])
+            if self.fp_detector.method is not None:
+                self.__reject_fp_comps(Y.shape[1:], max_bright=Y.max())
 
             self.estimates.S = np.zeros_like(self.estimates.C)
             nr = self.estimates.C.shape[0]
@@ -377,28 +357,6 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.estimates.c1 = np.zeros(nr)
             self.estimates.neurons_sn = np.std(self.estimates.YrA, axis=-1)
             self.estimates.lam = np.zeros(nr)
-        elif self.params.get('online', 'init_method') == 'cnmf':
-            n_processes = cpu_count() - 1 or 1
-            cnm = CNMF(n_processes=n_processes, params=self.params, dview=self.dview)
-            cnm.estimates.shifts = self.estimates.shifts
-            if self.params.get('patch', 'rf') is None:
-                cnm.dview = None
-                cnm.fit(np.array(Y))
-                self.estimates = cnm.estimates
-
-            else:
-                Y.save('init_file.hdf5')
-                f_new = mmapping.save_memmap(['init_file.hdf5'], base_name='Yr', order='C',
-                                             slices=[slice(0, opts['init_batch']), None, None])
-
-                Yrm, dims_, T_ = mmapping.load_memmap(f_new)
-                Y = np.reshape(Yrm.T, [T_] + list(dims_), order='F')
-                cnm.fit(Y)
-                self.estimates = cnm.estimates
-                if self.params.get('online', 'normalize'):
-                    self.estimates.A /= self.img_norm.reshape(-1, order='F')[:, np.newaxis]
-                    self.estimates.b /= self.img_norm.reshape(-1, order='F')[:, np.newaxis]
-                    self.estimates.A = csc_matrix(self.estimates.A)
         elif self.params.get('online', 'init_method') == 'seeded':
             init = self.params.get_group('init').copy()
             is1p = (init['method_init'] == 'corr_pnr' and init['ring_size_factor'] is not None)
@@ -522,10 +480,15 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             frame_cor = frame_cor/self.img_norm
         self.fit_next(t, frame_cor.reshape(-1, order='F'))
 
-    def __reject_fp_comps(self, dims):
-        trace_len = 500
-        if self.estimates.C.shape[1] < trace_len:
+        if self.fp_detector.method is not None:
+            self.__reject_fp_comps((d1, d2), max_bright=frame_.max())
+
+    def __reject_fp_comps(self, dims, max_bright):
+        if self.estimates.C.shape[1] < 500:
             return False
+        if self.estimates.A.shape[1] == self.checked_comps:
+            return False
+        logging.info('fp detector effected')
 
         checked_A = self.estimates.A.toarray()[:, :self.checked_comps]
         checked_C = self.estimates.C[:self.checked_comps]
@@ -535,29 +498,23 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         unchecked_C = self.estimates.C[self.checked_comps:]
         unchecked_YrA = self.estimates.YrA[self.checked_comps:]
 
-        spatial = unchecked_A.reshape(dims + (-1,), order='F').transpose(2, 0, 1)
-        spatial = crop_footprint(spatial, 80)
-        spatial = spatial.reshape((spatial.shape[0], -1))
-        trace = process_traces(unchecked_C, trace_len)
-        combined = np.concatenate((spatial, trace), axis=1)
-
-        if self.fp_detect_method == 'deep':
-            pred = self.fp_detector.predict(torch.from_numpy(combined))[1]
-        elif self.fp_detector is not None:
-            pred = self.fp_detector.predict(combined)
-
-        thred = 0.5
+        reshaped_unchecked_A = unchecked_A.reshape(dims + (-1,), order='F').transpose(2, 0, 1)
+        pred, thred = self.fp_detector.predict(
+            reshaped_unchecked_A / reshaped_unchecked_A.max(),
+            unchecked_C / unchecked_C.max())
         unchecked_A = unchecked_A[:, pred >= thred]
         unchecked_C = unchecked_C[pred >= thred]
         unchecked_YrA = unchecked_YrA[pred >= thred]
 
-        self.estimates.A = coo_matrix(np.concatenate([checked_A, unchecked_A], axis=1))
-        self.estimates.C = np.concatenate([checked_C, unchecked_C], axis=0)
-        self.estimates.YrA = np.concatenate([checked_YrA, unchecked_YrA], axis=0)
+        if len(unchecked_A.shape) == 2:
+            self.estimates.A = coo_matrix(np.concatenate([checked_A, unchecked_A], axis=1))
+            self.estimates.C = np.concatenate([checked_C, unchecked_C], axis=0)
+            self.estimates.YrA = np.concatenate([checked_YrA, unchecked_YrA], axis=0)
         self.checked_comps = self.estimates.C.shape[0] # update checked_comps
 
-    def __fit(self, cap, output_dir='data/out/sample/'):
+    def __fit(self, cap, output_dir='data/out/sample/', with_plot=True):
         self.cap = cap
+        self.with_plot = with_plot
         self.out_mat_file = os.path.join(output_dir, 'neurons.mat')
         self.out_avi_file = os.path.join(output_dir, 'rec.avi')
         if not os.path.exists(output_dir):
@@ -617,41 +574,49 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             f.create_dataset('C', (self.N, 100), maxshape=(None, None))
             f.create_dataset('S', (self.N, 100), maxshape=(None, None))
 
-        prev_time = time.time()
+        online_start_frame = self.time_frame
+        online_start_time = prev_time = time.time()
         while True:
-            while time.time() - prev_time < time_d:
+            try:
+                while time.time() - prev_time < time_d:
+                    pass
+                fps = 1 / (time.time() - prev_time)
+                prev_time = time.time()
+
+                if self.with_plot:
+                    self.__set_plot(self.time_frame, frame_shape=(h, w), with_demixed=True)
+                if self.time_frame % 100 == 0:
+                    self.__set_results(self.time_frame)
+                    self.estimates.noisyC = np.hstack(
+                        (self.estimates.noisyC, np.zeros((self.estimates.noisyC.shape[0], 100))))
+                    self.estimates.C_on = np.hstack(
+                        (self.estimates.C_on, np.zeros((self.estimates.C_on.shape[0], 100))))
+                    p = multiprocessing.Process(target=self.__save_results, args=[frame])
+                    p.start()
+
+                comp_num = self.M - self.params.get('init', 'nb')
+                lines = [f'FPS: {fps:.4f}', f'neurons: {comp_num}', f'{self.time_frame} frame']
+                if self.sync_patterns is not None and self.laser.is_shooting.value == 1:
+                    lines.append('now shooting')
+                    frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out, text_color=(0, 0, 255))
+                else:
+                    frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out)
+
+                self.__fit_next_frame(frame, self.time_frame, model_LN=model_LN)
+                if not self.sync_patterns is None:
+                    latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame]
+                    if np.any(np.all(self.sync_patterns < zscore(latest), axis=0)):
+                        self.laser.shoot_laser()
+
+                self.time_frame += 1
+            except:
                 pass
-            fps = 1 / (time.time() - prev_time)
-            prev_time = time.time()
 
-            self.__set_plot(self.time_frame, frame_shape=(h, w), with_demixed=True)
-            if self.time_frame % 100 == 0:
-                self.__set_results(self.time_frame)
-                self.estimates.noisyC = np.hstack(
-                    (self.estimates.noisyC, np.zeros((self.estimates.noisyC.shape[0], 100))))
-                self.estimates.C_on = np.hstack(
-                    (self.estimates.C_on, np.zeros((self.estimates.C_on.shape[0], 100))))
-                p = multiprocessing.Process(target=self.__save_results, args=[frame])
-                p.start()
-
-            comp_num = self.M - self.params.get('init', 'nb')
-            lines = [f'FPS: {fps:.4f}', f'neurons: {comp_num}', f'{self.time_frame} frame']
-            if self.sync_patterns is not None and self.laser.is_shooting.value == 1:
-                lines.append('now shooting')
-                frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out, text_color=(0, 0, 255))
-            else:
-                frame = self.__show_next_frame(lines, mode='analyze', avi_out=avi_out)
-
-            self.__fit_next_frame(frame, self.time_frame, model_LN=model_LN)
-            if not self.sync_patterns is None:
-                latest = self.estimates.C_on[self.params.get('init', 'nb'):self.M, self.time_frame-1:self.time_frame]
-                if np.any(np.all(self.sync_patterns < zscore(latest), axis=0)):
-                    self.laser.shoot_laser()
-
-            self.time_frame += 1
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-        
+
+        print('Overall FPS:', (self.time_frame - online_start_frame) / (time.time() - online_start_time))
+
         with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
             f.create_dataset('b0', data=self.estimates.b0)
@@ -667,7 +632,7 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             CV2VideoHandler(input_camera_id),
             output_dir=output_dir)
 
-    def fit_from_file(self, input_video_path, mov_key=None, output_dir=None):
+    def fit_from_file(self, input_video_path, mov_key=None, output_dir=None, with_plot=True):
         _, ext = os.path.splitext(input_video_path)
         if ext == '.avi':
             cap = CV2VideoHandler(input_video_path)
@@ -676,6 +641,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 cap = H5VideoHandler(input_video_path, mov_key=mov_key)
             else:
                 raise ValueError('`mov_key` is needed if use .h5 or .mat video file.')
+        elif input_video_path[-1] == '/':
+            cap = TIFFVideoHandler(input_video_path)
         else:
             raise ValueError('We only supports .avi, .h5, .hdf5, or .mat video file.')
-        self.__fit(cap, output_dir=output_dir)
+        self.__fit(cap, output_dir=output_dir, with_plot=with_plot)

@@ -18,7 +18,7 @@ class LaserHandler():
             self.ser = None
         else:
             self.ser = ser
-            self.__show_connection(self.ser)
+            self.__show_connection()
 
     def __select_port(self):
         ser = serial.Serial()
