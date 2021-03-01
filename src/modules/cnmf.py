@@ -48,6 +48,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.laser = LaserHandler()
         self.time_frame = 0
         self.checked_comps = 0
+        self.accept_comp_num = 0
+        self.reject_comp_num = 0
         self.fp_detector = FpDetector(fp_detect_method)
 
     def __init_window_status(self, frame_shape, video_bit='uint8'):
@@ -499,6 +501,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         unchecked_A = unchecked_A[:, pred >= thred]
         unchecked_C = unchecked_C[pred >= thred]
         unchecked_YrA = unchecked_YrA[pred >= thred]
+        self.accept_comp_num += (pred >= thred).sum()
+        self.reject_comp_num += (pred < thred).sum()
 
         if len(unchecked_A.shape) == 2:
             self.estimates.A = coo_matrix(np.concatenate([checked_A, unchecked_A], axis=1))
@@ -610,6 +614,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 break
 
         print('Overall FPS:', (self.time_frame - online_start_frame) / (time.time() - online_start_time))
+        print('accept num, reject num:', self.accept_comp_num, self.reject_comp_num)
+        print('accept rate:', self.accept_comp_num / (self.accept_comp_num + self.reject_comp_num))
+        print('reject rate:', self.reject_comp_num / (self.accept_comp_num + self.reject_comp_num))
 
         with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
