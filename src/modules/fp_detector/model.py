@@ -97,4 +97,4 @@ class FpDetector():
             trace = trace.reshape(-1, 1, 500)
             spatial = spatial.reshape(-1, 1, 80, 80)
             pred = self.model((torch.from_numpy(trace).float(), torch.from_numpy(spatial).float()))
-            return pred[:, 0], 0.2
+            return pred[:, 0], 0.5

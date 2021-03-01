@@ -1,10 +1,8 @@
 import logging
-import os
 import multiprocessing
+import os
 import sys
 import time
-from math import sqrt
-from multiprocessing import Value
 
 import cv2
 import h5py
@@ -13,10 +11,6 @@ import caiman
 from caiman.motion_correction import high_pass_filter_space, motion_correct_iteration_fast, sliding_window, tile_and_correct
 from caiman.source_extraction.cnmf import online_cnmf, pre_processing, initialization
 from scipy.sparse import csc_matrix, coo_matrix
-from scipy.io import loadmat
-from sklearn.decomposition import NMF
-from sklearn.preprocessing import normalize
-import torch
 
 from modules.fp_detector.model import FpDetector
 from modules.laser_handler import LaserHandler
@@ -54,6 +48,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
             self.laser = LaserHandler()
         self.time_frame = 0
         self.checked_comps = 0
+        self.accept_comp_num = 0
+        self.reject_comp_num = 0
         self.fp_detector = FpDetector(fp_detect_method)
 
     def __init_window_status(self, frame_shape, video_bit='uint8'):
@@ -505,6 +501,8 @@ class MiniscopeOnACID(online_cnmf.OnACID):
         unchecked_A = unchecked_A[:, pred >= thred]
         unchecked_C = unchecked_C[pred >= thred]
         unchecked_YrA = unchecked_YrA[pred >= thred]
+        self.accept_comp_num += (pred >= thred).sum()
+        self.reject_comp_num += (pred < thred).sum()
 
         if len(unchecked_A.shape) == 2:
             self.estimates.A = coo_matrix(np.concatenate([checked_A, unchecked_A], axis=1))
@@ -616,6 +614,9 @@ class MiniscopeOnACID(online_cnmf.OnACID):
                 break
 
         print('Overall FPS:', (self.time_frame - online_start_frame) / (time.time() - online_start_time))
+        print('accept num, reject num:', self.accept_comp_num, self.reject_comp_num)
+        print('accept rate:', self.accept_comp_num / (self.accept_comp_num + self.reject_comp_num))
+        print('reject rate:', self.reject_comp_num / (self.accept_comp_num + self.reject_comp_num))
 
         with h5py.File(self.out_mat_file, 'a') as f:
             f['cnmfe_last_frame_t'] = time.time()
