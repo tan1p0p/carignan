@@ -1,4 +1,4 @@
-# online-calcium-imaging
+# Carignan: Calcium real-time imaging for group and network analysis of neurons
 Real-time calucium imaging software based on [CaImAn](https://caiman.readthedocs.io/en/master/).
 - frame-by-frame OnACID with simple GUI
     - works on Windows, Mac or Linux
